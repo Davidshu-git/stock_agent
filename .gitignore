@@ -18,3 +18,4 @@ __pycache__/
 # 5. 我们之前写的本地沙箱数据目录（防止把生成的报告传上去）
 agent_workspace/
 knowledge_base/
+embeddings/  # 👈 新增：忽略向量索引缓存目录

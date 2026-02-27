@@ -1,4 +1,5 @@
 import os
+import json
 from dotenv import load_dotenv
 from pathlib import Path
 import yfinance as yf
@@ -59,6 +60,14 @@ KB_DIR.mkdir(parents=True, exist_ok=True) # 如果没有会自动创建
 
 # 定义允许读取的文件后缀白名单
 ALLOWED_EXTENSIONS = {'.pdf', '.md', '.txt', '.csv'}
+
+# 🌟 新增：FAISS 向量硬盘持久化目录
+FAISS_DB_DIR = Path("./embeddings").resolve()
+FAISS_DB_DIR.mkdir(parents=True, exist_ok=True)
+
+# 🌟 新增：FAISS 向量库全局内存缓存池
+# 字典结构: { "文件绝对路径": {"mtime": 12345678.9, "vectorstore": <FAISS_Object>} }
+FAISS_CACHE = {}
 
 # ==========================================
 # 极客视觉核心：自定义回调拦截器
@@ -195,7 +204,7 @@ def write_local_file(file_path: str, content: str) -> str:
         return f"写入文件出错: {str(e)}"
 
 # ==========================================
-# 插件 5：RAG 本地文档检索器
+# 插件 5：RAG 本地文档检索器 (L1内存 + L2硬盘 混合持久化架构)
 # ==========================================
 @tool
 def analyze_local_document(file_name: str, query: str) -> str:
@@ -206,40 +215,92 @@ def analyze_local_document(file_name: str, query: str) -> str:
     try:
         target_path = (KB_DIR / file_name).resolve()
         
+        # 安全拦截
         if not target_path.is_relative_to(KB_DIR):
             return "❌ 安全拦截：你试图读取知识库以外的文件！"
 
         if not target_path.exists():
             return f"❌ 找不到文件: {file_name}。请先使用 list_kb_files 工具查看当前有哪些文件。"
             
-        # 🌟 核心升级：根据后缀名动态分配加载器
-        ext = target_path.suffix.lower()
-        if ext == '.pdf':
-            loader = PyPDFLoader(str(target_path))
-        elif ext in ['.md', '.txt', '.csv']:
-            # 对于纯文本，强制使用 utf-8 编码读取，防止中文乱码
-            loader = TextLoader(str(target_path), encoding='utf-8')
-        else:
-            return f"❌ 不支持的文件格式: {ext}。目前支持 {ALLOWED_EXTENSIONS}"
-
-        # 加载文档
-        docs = loader.load()
+        current_mtime = os.path.getmtime(target_path)
+        target_path_str = str(target_path)
         
-        # 数据切块 (后续逻辑完全保持不变)
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-        raw_splits = text_splitter.split_documents(docs)
-        splits = [s for s in raw_splits if s.page_content.strip()]
+        # 为该文件计算专属的硬盘缓存目录名
+        doc_cache_dir = FAISS_DB_DIR / f"{file_name}_vstore"
+        meta_file = doc_cache_dir / "meta.json"
         
-        if not splits:
-            return f"❌ 文件 {file_name} 内容为空，或者无法提取有效文本。"
-        
-        # 使用你跑通的 DashScope 原生向量接口
         embeddings = DashScopeEmbeddings(
             dashscope_api_key=dashscope_key,
             model="text-embedding-v3", 
         )
         
-        vectorstore = FAISS.from_documents(splits, embeddings)
+        # ==========================================
+        # ⚡ 检查 L1 缓存 (内存)
+        # ==========================================
+        if target_path_str in FAISS_CACHE and FAISS_CACHE[target_path_str]["mtime"] == current_mtime:
+            console.print(f"[bold yellow]⚡ L1 命中 (内存):[/bold yellow] [yellow dim]极速复用 {file_name} 的向量索引[/yellow dim]")
+            vectorstore = FAISS_CACHE[target_path_str]["vectorstore"]
+            
+        else:
+            # ==========================================
+            # 💾 检查 L2 缓存 (硬盘)
+            # ==========================================
+            loaded_from_disk = False
+            if doc_cache_dir.exists() and meta_file.exists():
+                try:
+                    with open(meta_file, 'r', encoding='utf-8') as f:
+                        meta = json.load(f)
+                    
+                    # 校验硬盘缓存的时间戳是否与文件当前时间一致
+                    if meta.get("mtime") == current_mtime:
+                        console.print(f"[bold cyan]💾 L2 命中 (硬盘):[/bold cyan] [cyan dim]加载 {file_name} 的持久化索引并写回内存[/cyan dim]")
+                        # 注意：allow_dangerous_deserialization=True 是必须的，因为我们要信任自己本地生成的 pickle 文件
+                        vectorstore = FAISS.load_local(
+                            str(doc_cache_dir), 
+                            embeddings, 
+                            allow_dangerous_deserialization=True 
+                        )
+                        # 反向预热 L1 内存池
+                        FAISS_CACHE[target_path_str] = {"mtime": current_mtime, "vectorstore": vectorstore}
+                        loaded_from_disk = True
+                except Exception as e:
+                    console.print(f"[bold red]读取硬盘缓存失败，准备降级重建: {str(e)}[/bold red]")
+            
+            # ==========================================
+            # 🔄 均未命中 (或文件被修改)：触发 L3 重建并穿透写入
+            # ==========================================
+            if not loaded_from_disk:
+                console.print(f"[bold blue]🔄 构建索引:[/bold blue] [blue dim]正在对 {file_name} 进行解析、向量化与持久化...[/blue dim]")
+                
+                ext = target_path.suffix.lower()
+                if ext == '.pdf':
+                    loader = PyPDFLoader(target_path_str)
+                elif ext in ['.md', '.txt', '.csv']:
+                    loader = TextLoader(target_path_str, encoding='utf-8')
+                else:
+                    return f"❌ 不支持的文件格式: {ext}。目前支持 {ALLOWED_EXTENSIONS}"
+
+                docs = loader.load()
+                text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+                raw_splits = text_splitter.split_documents(docs)
+                splits = [s for s in raw_splits if s.page_content.strip()]
+                
+                if not splits:
+                    return f"❌ 文件 {file_name} 内容为空，或者无法提取有效文本。"
+                
+                # 构建新的向量库
+                vectorstore = FAISS.from_documents(splits, embeddings)
+                
+                # 写入 L1 内存
+                FAISS_CACHE[target_path_str] = {"mtime": current_mtime, "vectorstore": vectorstore}
+                
+                # 写入 L2 硬盘
+                doc_cache_dir.mkdir(parents=True, exist_ok=True)
+                vectorstore.save_local(str(doc_cache_dir))
+                with open(meta_file, 'w', encoding='utf-8') as f:
+                    json.dump({"mtime": current_mtime, "file_name": file_name}, f)
+
+        # 执行真正的检索操作
         retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
         relevant_docs = retriever.invoke(query)
         
