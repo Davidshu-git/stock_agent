@@ -34,6 +34,8 @@ from rich.panel import Panel
 from rich.markdown import Markdown   # 🌟 新增：Markdown 渲染引擎
 from rich.rule import Rule           # 🌟 新增：自适应分隔线组件
 from langchain.callbacks.base import BaseCallbackHandler
+#添加超时处理逻辑
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 # 初始化富文本控制台
 console = Console()
@@ -216,6 +218,7 @@ def draw_stock_chart(ticker: str) -> str:
 # 插件 1.6：港股市场查价引擎 (带有自动格式化装甲)
 # ==========================================
 @tool
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_hk_stock_price(ticker: str, date: str = None) -> str:
     """
     🚨 专用于查询港股（香港股市）的股价。
@@ -310,6 +313,7 @@ def draw_hk_stock_chart(ticker: str) -> str:
 # 插件 1.8：A 股市场查价引擎 (基于 AkShare)
 # ==========================================
 @tool
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_ashare_price(ticker: str, date: str = None) -> str:
     """
     🚨 专用于查询中国 A 股的股价。
@@ -407,6 +411,7 @@ def draw_ashare_chart(ticker: str) -> str:
 # 插件 2：代码搜索工具
 # ==========================================
 @tool
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def search_company_ticker(company_name: str) -> str:
     """
     当你不知道某家公司、产品或品牌的具体美股股票代码时，必须先使用此工具。
@@ -732,7 +737,10 @@ llm = ChatOpenAI(
     model="qwen3.5-plus", # 强烈推荐用 qwen-max，处理复杂逻辑和多工具路由最稳
     api_key=dashscope_key,
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", # 核心：指向阿里兼容接口
-    temperature=0
+    temperature=0,
+    # 🌟 新增：配置请求超时与底层自动重试机制
+    request_timeout=45,  # 设定 45 秒硬性超时阈值
+    max_retries=3        # 遇到 502/504 等网络波动自动重试 3 次
 )
 
 prompt = ChatPromptTemplate.from_messages([
@@ -850,7 +858,7 @@ if __name__ == "__main__":
             print() # 输出前补充一个空行，保持顶部的呼吸感
             
             # 顶部自适应边界线
-            console.print(Rule("[bold cyan]SYS.RESPONSE[/bold cyan]", style="cyan", align="left"))
+            console.print(Rule("[bold cyan]SYS.RESPONSE[/bold cyan]", style="cyan"))
             
             # 核心：使用 Rich 的 Markdown 引擎进行渲染
             console.print(Markdown(response['output']))
