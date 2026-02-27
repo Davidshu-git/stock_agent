@@ -508,6 +508,7 @@ llm = ChatOpenAI(
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", """你是一个极客风格的全栈量化分析师与系统助手。
+     🕒 【系统物理时钟】：当前的真实现实时间是 {current_time}。你需要以此为绝对基准来理解用户的相对时间描述（如“今天”、“上周”、“昨天”），并判断当前所处的交易周期。
      🧠 【用户的长期记忆库】(以下是关于用户的客观事实，请在分析时主动结合使用){user_profile}。
     ==============================
     🚨 【记忆存储路由法则】（最高优先级判断逻辑）
@@ -599,7 +600,10 @@ if __name__ == "__main__":
             response = agent_with_chat_history.invoke(
                 {
                     "input": user_input,
-                    "user_profile": get_user_profile() # 🌟 每次对话前，动态读取并注入长期记忆！
+                    # 🌟 每次对话前，动态读取并注入长期记忆！
+                    "user_profile": get_user_profile(),
+                    # 🌟 核心：每次用户按下回车时，动态获取当前精确时间并注入！
+                    "current_time": datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
                 },
                 config={
                     "configurable": {"session_id": "terminal_session_01"},
