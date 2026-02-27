@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 import pandas as pd
 import mplfinance as mpf
-from datetime import datetime
+from datetime import datetime, timedelta
 from filelock import FileLock
 import yfinance as yf
 from langchain_core.tools import tool
@@ -114,19 +114,50 @@ class HackerMatrixCallback(BaseCallbackHandler):
         console.print("\n[bold green]▓▓▓▓▓▓▓▓ 任务执行完毕 ▓▓▓▓▓▓▓▓[/bold green]")
 
 # ==========================================
-# 插件 1：通过yahoo的标准接口查询美股股价
+# 插件 1：通过yahoo的标准接口查询美股股价 (支持指定日期)
 # ==========================================
 @tool
-def get_stock_price(ticker: str) -> str:
-    """输入美股代码（如 AAPL, MSFT），返回该股票最近一个交易日的开盘价和收盘价。"""
+def get_stock_price(ticker: str, date: str = None) -> str:
+    """
+    输入美股代码（如 AAPL, MSFT），返回该股票的开盘价和收盘价。
+    - 参数 ticker: 美股代码。
+    - 参数 date (可选): 指定查询的日期，格式必须为 'YYYY-MM-DD'（例如 '2023-10-25'）。如果未提供此参数，则默认返回最近一个交易日的数据。
+    """
     try:
+        import yfinance as yf # 确保在作用域内
         stock = yf.Ticker(ticker)
-        hist = stock.history(period="1d")
+        
+        if date:
+            # 如果提供了具体日期，解析它并计算下一天，以满足 yfinance 的区间查询要求
+            try:
+                target_date = datetime.strptime(date, "%Y-%m-%d")
+                next_date = target_date + timedelta(days=1)
+                
+                start_str = target_date.strftime("%Y-%m-%d")
+                end_str = next_date.strftime("%Y-%m-%d")
+                
+                # 查询特定区间
+                hist = stock.history(start=start_str, end=end_str)
+                date_label = date
+            except ValueError:
+                return "❌ 查询出错：日期格式不正确。请大模型务必使用 'YYYY-MM-DD' 格式重试。"
+        else:
+            # 未提供日期，默认查询最近 1 天
+            hist = stock.history(period="1d")
+            date_label = "最近交易日"
+            
         if hist.empty:
-            return f"未找到 {ticker} 的数据"
+            return f"❌ 未找到 {ticker} 在 {date_label} 的数据（可能该日期为周末/节假日非交易日，或者股票代码错误）。"
+            
+        # 提取数据
         open_p = round(float(hist['Open'].iloc[0]), 2)
         close_p = round(float(hist['Close'].iloc[0]), 2)
-        return f"{ticker} 最近交易日数据 - 开盘价: {open_p}, 收盘价: {close_p}"
+        
+        # 获取实际返回数据的日期（防止时区或 API 截断问题导致日期对不上）
+        actual_date = hist.index[0].strftime("%Y-%m-%d")
+        
+        return f"✅ {ticker} 在 {actual_date} 的数据 - 开盘价: {open_p}, 收盘价: {close_p}"
+        
     except Exception as e:
         return f"查询出错: {str(e)}"
     
