@@ -2,6 +2,9 @@ import os
 import json
 from dotenv import load_dotenv
 from pathlib import Path
+import pandas as pd
+import mplfinance as mpf
+from datetime import datetime
 import yfinance as yf
 from langchain_core.tools import tool
 # 使用openai 兼容千问
@@ -119,6 +122,53 @@ def get_stock_price(ticker: str) -> str:
         return f"{ticker} 最近交易日数据 - 开盘价: {open_p}, 收盘价: {close_p}"
     except Exception as e:
         return f"查询出错: {str(e)}"
+    
+# ==========================================
+# 插件 1.5：K线图与 30 天走势可视化
+# ==========================================
+@tool
+def draw_stock_chart(ticker: str) -> str:
+    """
+    获取指定美股代码（如 AAPL, MSFT）过去 1 个月的历史数据，绘制专业的 K线走势图与成交量，
+    并将图片安全保存在本地沙箱中。
+    当你需要为分析报告增加可视化图表，或者用户要求查看历史走势时，调用此工具。
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        # 获取过去 1 个月的数据（包含 Open, High, Low, Close, Volume）
+        hist = stock.history(period="1mo")
+        if hist.empty:
+            return f"❌ 未找到 {ticker} 的历史数据，无法绘图。"
+
+        # 生成带有时间戳的文件名，防止图片被覆盖
+        chart_filename = f"{ticker}_30d_chart_{datetime.now().strftime('%Y%m%d%H%M%S')}.png"
+        
+        # 将图片路径强制锁定在沙箱目录内 (复用我们之前的防逃逸安全屋)
+        chart_path = (SANDBOX_DIR / chart_filename).resolve()
+
+        # 核心绘图逻辑：使用 mpf 画出带均线和成交量的雅虎风格 K线图
+        mpf.plot(
+            hist, 
+            type='candle',       # K线图模式
+            volume=True,         # 显示底部成交量
+            style='yahoo',       # 雅虎财经配色风格 (红绿柱)
+            title=f"{ticker} 30-Day Trend", 
+            mav=(5, 10),         # 添加 5日和 10日移动均线
+            savefig=str(chart_path) # 直接保存到沙箱，不弹窗
+        )
+
+        # 提取极值，作为 prompt 补充信息传给 LLM
+        max_price = round(hist['High'].max(), 2)
+        min_price = round(hist['Low'].min(), 2)
+        latest_close = round(hist['Close'].iloc[-1], 2)
+        
+        return (
+            f"✅ {ticker} 的30天K线图已成功生成！图片已保存在沙箱中。\n"
+            f"【统计摘要】期间最高价: {max_price}, 最低价: {min_price}, 最新收盘价: {latest_close}。\n"
+            f"⚠️ 【强制指令】：你必须在最终的 Markdown 分析报告中，使用相对路径语法 `![{ticker} 走势图](./{chart_filename})` 将该图表嵌入进去，并结合上述统计摘要对走势进行解读。"
+        )
+    except Exception as e:
+        return f"绘制图表出错: {str(e)}"
 
 # ==========================================
 # 插件 2：代码搜索工具
@@ -333,7 +383,7 @@ def list_kb_files() -> str:
     except Exception as e:
         return f"读取目录出错: {str(e)}"
 
-tools = [get_stock_price, search_company_ticker, read_local_file, write_local_file, list_kb_files, analyze_local_document]
+tools = [get_stock_price, draw_stock_chart, search_company_ticker, read_local_file, write_local_file, list_kb_files, analyze_local_document]
 
 # ==========================================
 # 🧠 配置长效记忆引擎 (Long-Term Memory)
@@ -357,10 +407,10 @@ llm = ChatOpenAI(
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", """你是一个极客风格的全栈量化分析师与系统助手。工作流如下：
-    1. 信息获取：遇到不知道的公司用 search_company_ticker，查价格用 get_stock_price，查本地资料用 analyze_local_document。
-    2. 【最高优先级指令】：你的所有分析任务，最终都**必须**生成一份排版精美的 Markdown 报告，并调用 write_local_file 工具将其保存在本地沙箱中。
+    1. 信息获取：遇到不知道的公司用 search_company_ticker，查价格用 get_stock_price，查历史走势并生成K线图用 draw_stock_chart，查本地资料用 analyze_local_document。
+    2. 【最高优先级指令】：你的所有分析任务，最终都**必须**生成一份排版精美的 Markdown 报告，并调用 write_local_file 存入沙箱。如果调用了绘图工具，必须在报告合适的位置嵌入该图片（如 `![图表](./xxx.png)`）。
     3. 终端回复：文件保存成功后，在终端中只需要汇报“分析报告已生成，路径为：xxx”，不要长篇大论。
-    4. 🧠 记忆系统：你现在拥有了跨越重启的长期记忆。在回答时，请主动结合用户历史告诉过你的持仓情况、投资偏好或上下文进行个性化分析。"""),
+    4. 🧠 记忆系统：你现在拥有了跨越重启的长期记忆。在回答时，请主动结合用户历史告诉过你的持仓情况或上下文进行个性化分析。"""),
     ("placeholder", "{chat_history}"),
     ("human", "{input}"),
     ("placeholder", "{agent_scratchpad}"),
