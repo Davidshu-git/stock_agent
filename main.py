@@ -31,6 +31,8 @@ from prompt_toolkit.styles import Style
 # 优化显示效果
 from rich.console import Console
 from rich.panel import Panel
+from rich.markdown import Markdown   # 🌟 新增：Markdown 渲染引擎
+from rich.rule import Rule           # 🌟 新增：自适应分隔线组件
 from langchain.callbacks.base import BaseCallbackHandler
 
 # 初始化富文本控制台
@@ -844,12 +846,18 @@ if __name__ == "__main__":
                 }
             )
             
-            # 4. 用 Rich Panel 打印 Agent 的最终简短回复
-            console.print(Panel(
-                response['output'], 
-                title="[bold cyan]SYS.RESPONSE[/bold cyan]", 
-                border_style="cyan"
-            ))
+            # 4. 🌟 终极视觉渲染：支持 Markdown 结构化排版
+            print() # 输出前补充一个空行，保持顶部的呼吸感
+            
+            # 顶部自适应边界线
+            console.print(Rule("[bold cyan]SYS.RESPONSE[/bold cyan]", style="cyan", align="left"))
+            
+            # 核心：使用 Rich 的 Markdown 引擎进行渲染
+            console.print(Markdown(response['output']))
+            
+            # 底部收尾边界线
+            console.print(Rule("[dim cyan]EOF[/dim cyan]", style="cyan"))
+            print() # 输出后补充空行
             
         except KeyboardInterrupt:
             # 捕捉 Ctrl+C，防止程序直接崩溃报错退出，而是优雅地中止当前输入
