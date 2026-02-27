@@ -1,5 +1,8 @@
 import os
 import json
+import re
+import base64
+import sys
 from dotenv import load_dotenv
 from pathlib import Path
 import pandas as pd
@@ -30,6 +33,8 @@ from prompt_toolkit.styles import Style
 # 优化显示效果
 from rich.console import Console
 from rich.panel import Panel
+from rich.markdown import Markdown
+from rich.rule import Rule
 from langchain.callbacks.base import BaseCallbackHandler
 
 # 初始化富文本控制台
@@ -529,6 +534,25 @@ def get_user_profile():
     except:
         return "暂无长期记忆"
 
+# ==========================================
+# 🌟 终端视觉引擎：iTerm2 内联图像渲染器
+# ==========================================
+def display_iterm2_image(filepath: str):
+    """
+    利用 iTerm2 的专有转义序列，将本地图片转化为 Base64 流直接喷射到终端屏幕上。
+    """
+    try:
+        with open(filepath, "rb") as f:
+            data = f.read()
+        b64_data = base64.b64encode(data).decode('utf-8')
+        
+        # iTerm2 魔法指令: \033]1337;File=[options]:[base64]\a
+        # inline=1 表示内联显示，width=100% 自动适配终端宽度
+        sys.stdout.write(f"\033]1337;File=inline=1;width=70%:{b64_data}\a\n")
+        sys.stdout.flush()
+    except Exception as e:
+        console.print(f"[red]❌ 终端图像引擎渲染失败: {str(e)}[/red]")
+
 # 使用 ChatOpenAI 包装器，但把底层请求地址指向阿里云
 llm = ChatOpenAI(
     model="qwen3.5-plus", # 强烈推荐用 qwen-max，处理复杂逻辑和多工具路由最稳
@@ -642,12 +666,39 @@ if __name__ == "__main__":
                 }
             )
             
-            # 4. 用 Rich Panel 打印 Agent 的最终简短回复
-            console.print(Panel(
-                response['output'], 
-                title="[bold cyan]SYS.RESPONSE[/bold cyan]", 
-                border_style="cyan"
-            ))
+            # 4. 🌟 终极视觉渲染：支持 Markdown 排版与 iTerm2 图片内联
+            output_text = response['output']
+            
+            # 使用正则精准切割 Markdown 中的图片语法: ![alt](path)
+            img_pattern = re.compile(r'!\[.*?\]\((.*?)\)')
+            parts = img_pattern.split(output_text)
+            
+            # 替换顶部的硬编码分隔线为自适应 Rule
+            print() # 先输出一个空行，保持顶部的呼吸感
+            console.print(Rule("[bold cyan]SYS.RESPONSE[/bold cyan]", style="cyan"))
+            
+            for i, part in enumerate(parts):
+                if i % 2 == 0:
+                    # 偶数部分：普通文本，交给 Rich 的 Markdown 引擎进行排版渲染
+                    if part.strip():
+                        # 为了避免上下留白过多，稍微做下清理
+                        console.print(Markdown(part.strip()))
+                else:
+                    # 奇数部分：被正则捕获的图片路径
+                    img_filename = Path(part.strip()).name # 提取出纯文件名
+                    # 无论大模型写的是相对路径还是什么，我们都去沙箱里找
+                    img_full_path = (SANDBOX_DIR / img_filename).resolve()
+                    
+                    if img_full_path.exists():
+                        console.print(f"[dim cyan]▶ 加载终端全息影像: {img_filename}...[/dim cyan]")
+                        display_iterm2_image(str(img_full_path))
+                        print() # 补充空行
+                    else:
+                        console.print(f"[yellow]⚠️ 视觉引擎警告：图表文件丢失 ({img_filename})[/yellow]")
+                        
+            # 替换底部的分隔线
+            console.print(Rule("[dim cyan]EOF[/dim cyan]", style="cyan"))
+            print() # 补充一个空行保持呼吸感
             
         except KeyboardInterrupt:
             # 捕捉 Ctrl+C，防止程序直接崩溃报错退出，而是优雅地中止当前输入
