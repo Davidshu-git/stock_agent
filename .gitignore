@@ -19,3 +19,4 @@ __pycache__/
 agent_workspace/
 knowledge_base/
 embeddings/
+memory/

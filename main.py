@@ -10,8 +10,9 @@ from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate
 from ddgs import DDGS
 # 新增：用于管理记忆的模块
-from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
+# 新增：用于长效记忆持久化的模块
+from langchain_community.chat_message_histories import FileChatMessageHistory
 # 新增：用于RAG的模块
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -68,6 +69,10 @@ FAISS_DB_DIR.mkdir(parents=True, exist_ok=True)
 # 🌟 新增：FAISS 向量库全局内存缓存池
 # 字典结构: { "文件绝对路径": {"mtime": 12345678.9, "vectorstore": <FAISS_Object>} }
 FAISS_CACHE = {}
+
+# 定义一个专门存放记忆碎片的目录
+MEMORY_DIR = Path("./memory").resolve()
+MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 
 # ==========================================
 # 极客视觉核心：自定义回调拦截器
@@ -330,6 +335,18 @@ def list_kb_files() -> str:
 
 tools = [get_stock_price, search_company_ticker, read_local_file, write_local_file, list_kb_files, analyze_local_document]
 
+# ==========================================
+# 🧠 配置长效记忆引擎 (Long-Term Memory)
+# ==========================================
+
+def get_session_history(session_id: str):
+    """
+    根据 session_id 动态加载对应的本地记忆文件。
+    即使 Agent 重启，只要 session_id 不变，它就能瞬间回想起之前的对话。
+    """
+    memory_file = str(MEMORY_DIR / f"session_{session_id}.json")
+    return FileChatMessageHistory(memory_file)
+
 # 使用 ChatOpenAI 包装器，但把底层请求地址指向阿里云
 llm = ChatOpenAI(
     model="qwen-max", # 强烈推荐用 qwen-max，处理复杂逻辑和多工具路由最稳
@@ -341,8 +358,9 @@ llm = ChatOpenAI(
 prompt = ChatPromptTemplate.from_messages([
     ("system", """你是一个极客风格的全栈量化分析师与系统助手。工作流如下：
     1. 信息获取：遇到不知道的公司用 search_company_ticker，查价格用 get_stock_price，查本地资料用 analyze_local_document。
-    2. 【最高优先级指令】：你的所有分析任务，最终都**必须**生成一份排版精美的 Markdown 报告，并调用 write_local_file 工具将其保存在本地沙箱中（文件名建议使用英文或拼音，如 report_xxx.md）。
-    3. 终端回复：文件保存成功后，在终端中**只需要**用极客的口吻简短汇报一句：“分析报告已生成，路径为：xxx”，不要在终端里长篇大论。"""),
+    2. 【最高优先级指令】：你的所有分析任务，最终都**必须**生成一份排版精美的 Markdown 报告，并调用 write_local_file 工具将其保存在本地沙箱中。
+    3. 终端回复：文件保存成功后，在终端中只需要汇报“分析报告已生成，路径为：xxx”，不要长篇大论。
+    4. 🧠 记忆系统：你现在拥有了跨越重启的长期记忆。在回答时，请主动结合用户历史告诉过你的持仓情况、投资偏好或上下文进行个性化分析。"""),
     ("placeholder", "{chat_history}"),
     ("human", "{input}"),
     ("placeholder", "{agent_scratchpad}"),
@@ -353,15 +371,6 @@ agent = create_tool_calling_agent(llm, tools, prompt)
 # 提示：这里我把 verbose 改成了 False，这样终端里就不会打印大段的思考过程，更像真人在聊天
 # 如果你想看它调用工具的底层细节，可以改回 True
 agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False) 
-
-# ==========================================
-# 配置记忆引擎
-# ==========================================
-# 在内存中开辟一块空间存储对话历史
-memory = InMemoryChatMessageHistory()
-
-def get_session_history(session_id: str):
-    return memory
 
 # 使用 RunnableWithMessageHistory 包装原有的执行器
 # 它会在每次调用前自动把 memory 里的历史塞进 {chat_history}，并在调用后把新对话存起来
