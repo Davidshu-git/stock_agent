@@ -77,6 +77,9 @@ FAISS_CACHE = {}
 MEMORY_DIR = Path("./memory").resolve()
 MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 
+# 🌟 新增：长期记忆提取工具 (LTM)
+USER_PROFILE_PATH = Path("./memory/user_profile.json").resolve()
+
 # ==========================================
 # 极客视觉核心：自定义回调拦截器
 # ==========================================
@@ -385,7 +388,37 @@ def list_kb_files() -> str:
     except Exception as e:
         return f"读取目录出错: {str(e)}"
 
-tools = [get_stock_price, draw_stock_chart, search_company_ticker, read_local_file, write_local_file, list_kb_files, analyze_local_document]
+# ==========================================
+# 插件 7：长期记忆提取
+# ==========================================
+@tool
+def remember_user_fact(fact: str) -> str:
+    """
+    🚨【记忆写入指令】：
+    当你得知关于用户的关键信息（如：持仓情况、成本价、投资偏好、个人习惯等）时，必须调用此工具。
+    输入参数 fact 是一句简短的客观事实描述，例如："用户持有 100 股 TSLA" 或 "用户不喜欢看长篇大论"。
+    """
+    try:
+        # 确保文件存在
+        if not USER_PROFILE_PATH.exists():
+            USER_PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(USER_PROFILE_PATH, 'w', encoding='utf-8') as f:
+                json.dump({"facts": []}, f)
+                
+        with open(USER_PROFILE_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # 防止重复写入
+        if fact not in data["facts"]:
+            data["facts"].append(fact)
+            with open(USER_PROFILE_PATH, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return f"✅ 长期记忆已更新：{fact}"
+        return "该记忆已存在。"
+    except Exception as e:
+        return f"记忆写入失败: {str(e)}"
+
+tools = [get_stock_price, draw_stock_chart, search_company_ticker, read_local_file, write_local_file, list_kb_files, analyze_local_document, remember_user_fact]
 
 # ==========================================
 # 🧠 配置长效记忆引擎 (Long-Term Memory)
@@ -393,11 +426,34 @@ tools = [get_stock_price, draw_stock_chart, search_company_ticker, read_local_fi
 
 def get_session_history(session_id: str):
     """
-    根据 session_id 动态加载对应的本地记忆文件。
-    即使 Agent 重启，只要 session_id 不变，它就能瞬间回想起之前的对话。
+    带有滑动窗口截断机制的短期记忆引擎。
     """
-    memory_file = str(MEMORY_DIR / f"session_{session_id}.json")
-    return FileChatMessageHistory(memory_file)
+    memory_file = str(MEMORY_DIR / f"{session_id}.json")
+    history = FileChatMessageHistory(memory_file)
+    
+    # 🌟 核心省钱逻辑：滑动窗口截断
+    # 如果对话超过 10 条（5次问答），我们就把更早的逐字稿清理掉，只保留最新的 10 条。
+    # 那些重要的历史信息，已经被大模型用 remember_user_fact 存进 user_profile 里面了！
+    if len(history.messages) > 10:
+        kept_messages = history.messages[-10:]
+        history.clear() # 清空臃肿的文件
+        for msg in kept_messages:
+            history.add_message(msg) # 把最新的 10 条写回去
+            
+    return history
+
+def get_user_profile():
+    """读取用户长期记忆核心，转化为字符串注入 Prompt"""
+    if not USER_PROFILE_PATH.exists():
+        return "暂无长期记忆"
+    try:
+        with open(USER_PROFILE_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not data.get("facts"):
+            return "暂无长期记忆"
+        return "\n".join([f"- {fact}" for fact in data["facts"]])
+    except:
+        return "暂无长期记忆"
 
 # 使用 ChatOpenAI 包装器，但把底层请求地址指向阿里云
 llm = ChatOpenAI(
@@ -408,7 +464,9 @@ llm = ChatOpenAI(
 )
 
 prompt = ChatPromptTemplate.from_messages([
-    ("system", """你是一个极客风格的全栈量化分析师与系统助手。工作流如下：
+    ("system", """你是一个极客风格的全栈量化分析师与系统助手。
+     🧠 【用户的长期记忆库】(以下是关于用户的客观事实，请在分析时主动结合使用){user_profile}。
+     工作流如下：
     1. 🔍 核心能力：遇到不知道的公司用 search_company_ticker，查最新价格用 get_stock_price，查30天走势并画图用 draw_stock_chart，查本地资料用 analyze_local_document。
     2. ✍️ 智能输出调度（最高法则）：
        - ⚡ 轻量级问答：如果用户只是单纯询问价格或简单问题，请直接在终端简明扼要地回答，绝对不要调用 write_local_file。
@@ -474,7 +532,10 @@ if __name__ == "__main__":
                 
             # 3. 将输入发给带有记忆的 Agent
             response = agent_with_chat_history.invoke(
-                {"input": user_input},
+                {
+                    "input": user_input,
+                    "user_profile": get_user_profile() # 🌟 每次对话前，动态读取并注入长期记忆！
+                },
                 config={
                     "configurable": {"session_id": "terminal_session_01"},
                     "callbacks": [HackerMatrixCallback()] # 🌟 在这里挂载黑客视觉滤镜！
