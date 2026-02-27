@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import mplfinance as mpf
 from datetime import datetime
+from filelock import FileLock
 import yfinance as yf
 from langchain_core.tools import tool
 # 使用openai 兼容千问
@@ -79,6 +80,9 @@ MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 
 # 🌟 新增：长期记忆提取工具 (LTM)
 USER_PROFILE_PATH = Path("./memory/user_profile.json").resolve()
+
+# 创建一个锁文件
+LOCK_PATH = Path("./memory/user_profile.json.lock").resolve()
 
 # ==========================================
 # 极客视觉核心：自定义回调拦截器
@@ -391,11 +395,12 @@ def list_kb_files() -> str:
 # ==========================================
 # 插件 7：长期记忆提取
 # ==========================================
+# 工具 1：KV 状态机 (覆盖型)
 @tool
 def update_user_memory(key: str, value: str) -> str:
     """
     🚨【记忆更新指令】：
-    用于记录或更新用户的关键长期信息（如：股票持仓、投资偏好、个人习惯）。
+    用于记录或更新用户的状态、偏好、持仓快照。相同 key 会直接覆盖。
     - 参数 key: 记忆的分类标签，必须是简短明确的名词（例如："苹果公司持仓"、"风险偏好"、"报告格式要求"）。
     - 参数 value: 具体的客观事实数据（例如："150股，成本150美元"、"激进型"、"只看Markdown结论"）。
     注意：如果同一个 key 已经存在，新的 value 将直接【覆盖】旧数据！如果用户清仓了，你可以把 value 设置为 "已清仓" 或 "无"。
@@ -406,28 +411,56 @@ def update_user_memory(key: str, value: str) -> str:
             USER_PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
             with open(USER_PROFILE_PATH, 'w', encoding='utf-8') as f:
                 json.dump({}, f)
-                
-        # 读取旧记忆
-        with open(USER_PROFILE_PATH, 'r', encoding='utf-8') as f:
-            data = json.load(f)
         
-        # 🌟 核心：覆盖或新增键值对
-        old_value = data.get(key)
-        data[key] = value
-        
-        # 写入新记忆
-        with open(USER_PROFILE_PATH, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        # 🌟 核心：加锁！在 with 语句块内，其他任何企图读写这个文件的线程都会被阻塞等待
+        with FileLock(LOCK_PATH, timeout=5): 
+            # 1. 读入
+            with open(USER_PROFILE_PATH, 'r', encoding='utf-8') as f:
+                data = json.load(f)
             
-        if old_value:
-            return f"✅ 记忆已更新：[{key}] 由 '{old_value}' 变更为 '{value}'"
-        else:
-            return f"✅ 新记忆已记录：[{key}] -> '{value}'"
+            # 2. 修改 (内存中)
+            data[key] = value
             
+            # 3. 写回
+            with open(USER_PROFILE_PATH, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+        return f"✅ 记忆已安全写入（加锁保护）：[{key}] -> '{value}'"
     except Exception as e:
         return f"记忆写入失败: {str(e)}"
 
-tools = [get_stock_price, draw_stock_chart, search_company_ticker, read_local_file, write_local_file, list_kb_files, analyze_local_document, update_user_memory]
+# 工具 2：事件流水账 (追加型) - 可选新增
+@tool
+def append_transaction_log(action: str, target: str, details: str) -> str:
+    """
+    🚨【交易日志指令】：
+    仅当用户明确发生了一笔【交易动作】（如：买入、卖出、转账）时调用。
+    它会像流水账一样把这笔操作追加到数据库中，绝对不会覆盖过去的历史。
+    """
+    try:
+        log_path = Path("./memory/transaction_logs.jsonl")
+        import time
+        log_entry = json.dumps({
+            "timestamp": time.time(),
+            "action": action,     # 例如："买入"
+            "target": target,     # 例如："苹果股票"
+            "details": details    # 例如："100股，成本150"
+        }, ensure_ascii=False)
+        
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(log_entry + "\n")
+        return "✅ 交易流水已追加记录。"
+    except Exception as e:
+        return f"记录流水失败: {str(e)}"
+
+tools = [get_stock_price,
+         draw_stock_chart,
+         search_company_ticker,
+         read_local_file, write_local_file,
+         list_kb_files,
+         analyze_local_document,
+         update_user_memory,
+         append_transaction_log]
 
 # ==========================================
 # 🧠 配置长效记忆引擎 (Long-Term Memory)
@@ -476,6 +509,28 @@ llm = ChatOpenAI(
 prompt = ChatPromptTemplate.from_messages([
     ("system", """你是一个极客风格的全栈量化分析师与系统助手。
      🧠 【用户的长期记忆库】(以下是关于用户的客观事实，请在分析时主动结合使用){user_profile}。
+    ==============================
+    🚨 【记忆存储路由法则】（最高优先级判断逻辑）
+    当你接收到用户的新信息时，你必须在脑海中进行分类，并严格调用对应的工具：
+
+    1. 🎯 【状态与偏好】 -> 调用 `update_user_memory`
+    - 触发条件：用户告知了当前持仓的总快照、个人投资偏好、习惯要求、人设设定。
+    - 判断标准：这个信息是“排他”的，新的状态会使旧的状态失效。
+    - 例子：“我现在手里有200股特斯拉”、“以后别给我生成图表了”。
+
+    2. 📜 【交易与事件】 -> 调用 `append_transaction_log`
+    - 触发条件：用户告知了一笔具体的动作或历史发生过的事件。
+    - 判断标准：它是流水账，不能覆盖。
+    - 例子：“我今天早上卖了50股苹果”、“我昨天把特斯拉清仓了”。
+
+    3. 📚 【深度知识】 -> 调用 `write_local_file`
+    - 触发条件：你为用户生成了深度的长篇分析、总结了某个行业的长文。
+    - 判断标准：文字量极大，需要持久化保存为 Markdown 供日后 RAG 检索。
+
+    4. 💬 【短期闲聊】 -> 不调用任何记忆工具！
+    - 触发条件：随口的提问、查当前价格、简单的问答。
+    - 判断标准：信息时效性极短，交给底层默认的短期滑动窗口记忆处理即可。
+    ==============================
      工作流如下：
     1. 🔍 核心能力：遇到不知道的公司用 search_company_ticker，查最新价格用 get_stock_price，查30天走势并画图用 draw_stock_chart，查本地资料用 analyze_local_document。
     2. ✍️ 智能输出调度（最高法则）：
