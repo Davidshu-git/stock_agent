@@ -119,122 +119,52 @@ class HackerMatrixCallback(BaseCallbackHandler):
         console.print("\n[bold green]▓▓▓▓▓▓▓▓ 任务执行完毕 ▓▓▓▓▓▓▓▓[/bold green]")
 
 # ==========================================
-# 插件 1：通过yahoo的标准接口查询美股股价 (支持指定日期)
+# 插件 1：通过yahoo的标准接口查询美股、港股、A股股价 (支持指定日期)
 # ==========================================
-@tool
-def get_stock_price(ticker: str, date: str = None) -> str:
-    """
-    输入美股代码（如 AAPL, MSFT），返回该股票的开盘价和收盘价。
-    - 参数 ticker: 美股代码。
-    - 参数 date (可选): 指定查询的日期，格式必须为 'YYYY-MM-DD'（例如 '2023-10-25'）。如果未提供此参数，则默认返回最近一个交易日的数据。
-    """
-    try:
-        import yfinance as yf # 确保在作用域内
-        stock = yf.Ticker(ticker)
-        
-        if date:
-            # 如果提供了具体日期，解析它并计算下一天，以满足 yfinance 的区间查询要求
-            try:
-                target_date = datetime.strptime(date, "%Y-%m-%d")
-                next_date = target_date + timedelta(days=1)
-                
-                start_str = target_date.strftime("%Y-%m-%d")
-                end_str = next_date.strftime("%Y-%m-%d")
-                
-                # 查询特定区间
-                hist = stock.history(start=start_str, end=end_str)
-                date_label = date
-            except ValueError:
-                return "❌ 查询出错：日期格式不正确。请大模型务必使用 'YYYY-MM-DD' 格式重试。"
-        else:
-            # 未提供日期，默认查询最近 1 天
-            hist = stock.history(period="1d")
-            date_label = "最近交易日"
-            
-        if hist.empty:
-            return f"❌ 未找到 {ticker} 在 {date_label} 的数据（可能该日期为周末/节假日非交易日，或者股票代码错误）。"
-            
-        # 提取数据
-        open_p = round(float(hist['Open'].iloc[0]), 2)
-        close_p = round(float(hist['Close'].iloc[0]), 2)
-        
-        # 获取实际返回数据的日期（防止时区或 API 截断问题导致日期对不上）
-        actual_date = hist.index[0].strftime("%Y-%m-%d")
-        
-        return f"✅ {ticker} 在 {actual_date} 的数据 - 开盘价: {open_p}, 收盘价: {close_p}"
-        
-    except Exception as e:
-        return f"查询出错: {str(e)}"
+def format_universal_ticker(ticker: str) -> str:
+    """智能推断股票市场并格式化为 yfinance 识别的代码"""
+    ticker = ticker.strip().upper()
     
-# ==========================================
-# 插件 1.5：K线图与 30 天走势可视化
-# ==========================================
-@tool
-def draw_stock_chart(ticker: str) -> str:
-    """
-    获取指定美股代码（如 AAPL, MSFT）过去 1 个月的历史数据，绘制专业的 K线走势图与成交量，
-    并将图片安全保存在本地沙箱中。
-    当你需要为分析报告增加可视化图表，或者用户要求查看历史走势时，调用此工具。
-    """
-    try:
-        stock = yf.Ticker(ticker)
-        # 获取过去 1 个月的数据（包含 Open, High, Low, Close, Volume）
-        hist = stock.history(period="1mo")
-        if hist.empty:
-            return f"❌ 未找到 {ticker} 的历史数据，无法绘图。"
-
-        # 🌟 核心修复：移除 datetime 时间戳，使用确定性的纯粹命名！
-        # 这样大模型绝对不会再拼错图片路径，且能自动覆盖旧图，保持沙箱整洁
-        chart_filename = f"{ticker}_30d_chart.png"
+    # 1. 如果大模型已经很聪明地带上了后缀，直接放行
+    if "." in ticker:
+        return ticker
         
-        # 将图片路径强制锁定在沙箱目录内 (复用我们之前的防逃逸安全屋)
-        chart_path = (SANDBOX_DIR / chart_filename).resolve()
-
-        # 核心绘图逻辑：使用 mpf 画出带均线和成交量的雅虎风格 K线图
-        mpf.plot(
-            hist, 
-            type='candle',       # K线图模式
-            volume=True,         # 显示底部成交量
-            style='yahoo',       # 雅虎财经配色风格 (红绿柱)
-            title=f"{ticker} 30-Day Trend", 
-            mav=(5, 10),         # 添加 5日和 10日移动均线
-            savefig=str(chart_path) # 直接保存到沙箱，不弹窗
-        )
-
-        # 提取极值，作为 prompt 补充信息传给 LLM
-        max_price = round(hist['High'].max(), 2)
-        min_price = round(hist['Low'].min(), 2)
-        latest_close = round(hist['Close'].iloc[-1], 2)
+    # 2. 纯字母，认定为美股 (如 AAPL, TSLA)
+    if ticker.isalpha():
+        return ticker
         
-        return (
-            f"✅ {ticker} 的30天K线图已成功生成！文件名为：{chart_filename}。\n"
-            f"【统计摘要】最高价: {max_price}, 最低价: {min_price}, 最新价: {latest_close}。\n"
-            f"🚨【强制语法】：在你马上要生成的 Markdown 报告中，必须严格使用 `![{ticker}走势图](./{chart_filename})` 插入此图片，一个字都不能改！"
-        )
-    except Exception as e:
-        return f"绘制图表出错: {str(e)}"
+    # 提取其中的纯数字部分
+    digits = ''.join(filter(str.isdigit, ticker))
+    
+    # 3. 港股：最多 4 位数字 (如 700 自动补齐为 0700.HK)
+    if len(digits) <= 4 and digits:
+        return f"{digits.zfill(4)}.HK"
+        
+    # 4. A 股：标准的 6 位数字
+    if len(digits) == 6:
+        # 沪市(60, 68开头)加 .SS，深市加 .SZ
+        if digits.startswith(('60', '68')):
+            return f"{digits}.SS"
+        else:
+            return f"{digits}.SZ"
+            
+    # 兜底返回原值
+    return ticker
 
-# ==========================================
-# 插件 1.6：港股市场查价引擎 (带有自动格式化装甲)
-# ==========================================
 @tool
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def get_hk_stock_price(ticker: str, date: str = None) -> str:
+def get_universal_stock_price(ticker: str, date: str = None) -> str:
     """
-    🚨 专用于查询港股（香港股市）的股价。
-    输入参数 ticker 必须是港股的数字代码（如 700, 9988, 3690）。
+    🌐 全球股票查价引擎（支持美股、A股、港股）。
+    只需传入用户提到的代码即可（例如：AAPL, 600519, 0700），底层会自动判断市场。
+    - 参数 date (可选): 'YYYY-MM-DD'。未提供则默认返回最近交易日。
     """
     try:
         import yfinance as yf
         from datetime import datetime, timedelta
         
-        # 🌟 核心防御：大模型可能传 "700"、"0700" 或 "0700.HK"，统一清洗
-        ticker_num = ''.join(filter(str.isdigit, ticker))
-        if not ticker_num:
-            return f"❌ 港股代码格式错误：{ticker}。"
-            
-        # 自动补齐 4 位并加上 yfinance 识别的 .HK 后缀
-        formatted_ticker = f"{ticker_num.zfill(4)}.HK"
+        # 🌟 调用智能中间件
+        formatted_ticker = format_universal_ticker(ticker)
         stock = yf.Ticker(formatted_ticker)
         
         if date:
@@ -244,56 +174,49 @@ def get_hk_stock_price(ticker: str, date: str = None) -> str:
                 hist = stock.history(start=target_date.strftime("%Y-%m-%d"), end=next_date.strftime("%Y-%m-%d"))
                 date_label = date
             except ValueError:
-                return "❌ 查询出错：日期格式不正确。"
+                return "❌ 日期格式不正确。请使用 'YYYY-MM-DD' 格式。"
         else:
             hist = stock.history(period="1d")
             date_label = "最近交易日"
             
         if hist.empty:
-            return f"❌ 未找到港股 {formatted_ticker} 在 {date_label} 的数据（可能为非交易日）。"
+            return f"❌ 未找到标的 {formatted_ticker} 在 {date_label} 的数据。"
             
         open_p = round(float(hist['Open'].iloc[0]), 2)
         close_p = round(float(hist['Close'].iloc[0]), 2)
         actual_date = hist.index[0].strftime("%Y-%m-%d")
         
-        return f"✅ 港股 {formatted_ticker} 在 {actual_date} 的数据 - 开盘价: {open_p}, 收盘价: {close_p}"
+        return f"✅ {formatted_ticker} ({actual_date}) - 开盘价: {open_p}, 收盘价: {close_p}"
     except Exception as e:
-        return f"查询港股出错: {str(e)}"
-
+        return f"查询出错，已停止重试: {str(e)}"
+    
 # ==========================================
-# 插件 1.7：港股专属 K 线视觉渲染器
+# 插件 1.5：K线图与 30 天走势可视化
 # ==========================================
 @tool
-def draw_hk_stock_chart(ticker: str) -> str:
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def draw_universal_stock_chart(ticker: str) -> str:
     """
-    🚨 专用于绘制港股（香港股市）的 30 天走势图。
-    输入参数 ticker 必须是港股的数字代码（如 700, 9988）。
+    🌐 全球股票 30 天走势绘图引擎（支持美股、A股、港股）。
+    当你需要为用户生成可视化图表时调用，传入代码即可。
     """
     try:
-        import yfinance as yf
-        import mplfinance as mpf
-        from datetime import datetime
-        
-        # 清洗并格式化代码
-        ticker_num = ''.join(filter(str.isdigit, ticker))
-        if not ticker_num:
-            return f"❌ 港股代码格式错误：{ticker}。"
-            
-        formatted_ticker = f"{ticker_num.zfill(4)}.HK"
+        # 🌟 调用智能中间件
+        formatted_ticker = format_universal_ticker(ticker)
         stock = yf.Ticker(formatted_ticker)
         hist = stock.history(period="1mo")
         
         if hist.empty:
-            return f"❌ 未找到港股 {formatted_ticker} 的历史数据，无法绘图。"
+            return f"❌ 未找到标的 {formatted_ticker} 的历史数据，无法绘图。"
             
-        # 生成确定性的文件名
-        chart_filename = f"HK_{ticker_num}_30d_chart.png"
+        # 统一规范文件名后缀，杜绝大模型乱拼路径
+        safe_name = formatted_ticker.replace('.', '_')
+        chart_filename = f"{safe_name}_30d_chart.png"
         chart_path = (SANDBOX_DIR / chart_filename).resolve()
         
-        # 绘图逻辑
         mpf.plot(
             hist, type='candle', volume=True, style='yahoo',
-            title=f"HK-Share {formatted_ticker} 30-Day Trend", mav=(5, 10),
+            title=f"{formatted_ticker} 30-Day Trend", mav=(5, 10),
             savefig=str(chart_path)
         )
         
@@ -302,110 +225,12 @@ def draw_hk_stock_chart(ticker: str) -> str:
         latest_close = round(hist['Close'].iloc[-1], 2)
         
         return (
-            f"✅ 港股 {formatted_ticker} 30天K线图生成完毕！文件名为：{chart_filename}。\n"
+            f"✅ {formatted_ticker} 走势图生成完毕！文件名为：{chart_filename}。\n"
             f"【摘要】最高: {max_price}, 最低: {min_price}, 最新: {latest_close}。\n"
-            f"🚨【强制语法】：必须严格使用 `![{ticker_num}走势图](./{chart_filename})` 嵌入 Markdown 中！"
+            f"🚨【强制语法】：必须严格使用 `![走势图](./{chart_filename})` 嵌入 Markdown 中！"
         )
     except Exception as e:
-        return f"港股绘图出错: {str(e)}"
-
-# ==========================================
-# 插件 1.8：A 股市场查价引擎 (基于 AkShare)
-# ==========================================
-@tool
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def get_ashare_price(ticker: str, date: str = None) -> str:
-    """
-    🚨 专用于查询中国 A 股的股价。
-    输入参数 ticker 必须是 A股的 6 位纯数字代码（如 600519, 000001）。
-    - 参数 date (可选): 指定查询日期 'YYYY-MM-DD'。未提供则默认返回最近一个交易日的数据。
-    """
-    try:
-        # 清洗 ticker，强行剥离出纯数字
-        ticker_num = ''.join(filter(str.isdigit, ticker))
-        if len(ticker_num) != 6:
-            return f"❌ A股代码格式错误：{ticker}，必须是 6 位纯数字代码。"
-        
-        if date:
-            try:
-                target_date = datetime.strptime(date, "%Y-%m-%d").strftime("%Y%m%d")
-                start_date = end_date = target_date
-                date_label = date
-            except ValueError:
-                return "❌ 日期格式不正确。请使用 'YYYY-MM-DD' 格式。"
-        else:
-            # 默认获取过去 7 天的数据，取最后一条确保能抓到最新的交易日
-            end_date = datetime.now().strftime("%Y%m%d")
-            start_date = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
-            date_label = "最近交易日"
-            
-        # 调用 AkShare 获取前复权日K线数据
-        df = ak.stock_zh_a_hist(symbol=ticker_num, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
-        
-        if df.empty:
-            return f"❌ 未找到 A股 {ticker_num} 在 {date_label} 的数据（可能为非交易日或代码错误）。"
-            
-        latest_data = df.iloc[-1]
-        open_p = round(float(latest_data['开盘']), 2)
-        close_p = round(float(latest_data['收盘']), 2)
-        actual_date = str(latest_data['日期'])[:10]
-        
-        return f"✅ A股 {ticker_num} 在 {actual_date} 的数据 - 开盘价: {open_p}, 收盘价: {close_p}"
-        
-    except Exception as e:
-        return f"查询A股出错: {str(e)}"
-
-# ==========================================
-# 插件 1.9：A 股专属 K 线视觉渲染器
-# ==========================================
-@tool
-def draw_ashare_chart(ticker: str) -> str:
-    """
-    🚨 专用于绘制中国 A 股的 30 天走势图。
-    输入参数 ticker 必须是 6 位纯数字代码（如 600519）。
-    """
-    try:
-        ticker_num = ''.join(filter(str.isdigit, ticker))
-        if len(ticker_num) != 6:
-            return f"❌ A股代码格式错误：{ticker}，必须是 6 位纯数字。"
-            
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=40) # 多取几天保证凑够一整个月的交易日
-        
-        df = ak.stock_zh_a_hist(symbol=ticker_num, period="daily", start_date=start_date.strftime("%Y%m%d"), end_date=end_date.strftime("%Y%m%d"), adjust="qfq")
-        
-        if df.empty:
-            return f"❌ 未找到 A股 {ticker_num} 的历史数据，无法绘图。"
-            
-        # 🌟 核心适配器：将 AkShare 的中文列名翻译成 mplfinance 识别的标准英文列名
-        df = df.rename(columns={
-            '日期': 'Date', '开盘': 'Open', '最高': 'High', 
-            '最低': 'Low', '收盘': 'Close', '成交量': 'Volume'
-        })
-        df['Date'] = pd.to_datetime(df['Date'])
-        df.set_index('Date', inplace=True)
-        
-        chart_filename = f"A_{ticker_num}_30d_chart.png"
-        chart_path = (SANDBOX_DIR / chart_filename).resolve()
-        
-        # 绘图逻辑
-        mpf.plot(
-            df, type='candle', volume=True, style='yahoo',
-            title=f"A-Share {ticker_num} 30-Day Trend", mav=(5, 10),
-            savefig=str(chart_path)
-        )
-        
-        max_price = round(df['High'].max(), 2)
-        min_price = round(df['Low'].min(), 2)
-        latest_close = round(df['Close'].iloc[-1], 2)
-        
-        return (
-            f"✅ A股 {ticker_num} 30天K线图生成完毕！文件名为：{chart_filename}。\n"
-            f"【摘要】最高: {max_price}, 最低: {min_price}, 最新: {latest_close}。\n"
-            f"🚨【强制语法】：必须严格使用 `![{ticker_num}走势图](./{chart_filename})` 嵌入 Markdown 中！"
-        )
-    except Exception as e:
-        return f"A股绘图出错: {str(e)}"
+        return f"绘图出错，已停止重试: {str(e)}"
 
 # ==========================================
 # 插件 2：代码搜索工具
@@ -683,18 +508,14 @@ def append_transaction_log(action: str, target: str, details: str) -> str:
     except Exception as e:
         return f"记录流水失败: {str(e)}"
 
-tools = [get_stock_price,
-         draw_stock_chart,
+tools = [get_universal_stock_price,
+         draw_universal_stock_chart,
          search_company_ticker,
          read_local_file, write_local_file,
          list_kb_files,
          analyze_local_document,
          update_user_memory,
-         append_transaction_log,
-         get_ashare_price,
-         draw_ashare_chart,
-         get_hk_stock_price,
-         draw_hk_stock_chart]
+         append_transaction_log]
 
 # ==========================================
 # 🧠 配置长效记忆引擎 (Long-Term Memory)
@@ -748,11 +569,10 @@ prompt = ChatPromptTemplate.from_messages([
      🕒 【系统物理时钟】：当前的真实现实时间是 {current_time}。你需要以此为绝对基准来理解用户的相对时间描述（如“今天”、“上周”、“昨天”），并判断当前所处的交易周期。
      🧠 【用户的长期记忆库】(以下是关于用户的客观事实，请在分析时主动结合使用){user_profile}。
      ==============================
-    🚨 【跨国股票市场路由法则】（极其重要！）
-    当用户询问股票数据或图表时，你必须根据股票所属市场，精确路由给对应的工具链：
-    - 🇺🇸 【美股市场】（如 苹果/AAPL, 微软/MSFT, 英伟达/NVDA）：必须调用 `get_stock_price` 和 `draw_stock_chart`。
-    - 🇨🇳 【A股市场】（如 贵州茅台/600519, 宁德时代/300750, 比亚迪）：必须提取出 **6位纯数字代码**，并调用专用的 `get_ashare_price`（查价）和 `draw_ashare_chart`（画图）。
-    - 🇭🇰 【港股市场】（如 腾讯/0700, 阿里/9988, 美团/3690）：必须提取出 **数字代码**，并调用专用的 `get_hk_stock_price`（查价）和 `draw_hk_stock_chart`（画图）。
+    🔍 核心能力：
+    遇到股票查价，直接调用 `get_universal_stock_price`；
+    遇到画图需求，直接调用 `draw_universal_stock_chart`。
+    工具会在底层自动识别美股/A股/港股，你无需操心市场后缀，直接传入用户给的代码即可。
     ==============================
     🚨 【记忆存储路由法则】（最高优先级判断逻辑）
     当你接收到用户的新信息时，你必须在脑海中进行分类，并严格调用对应的工具：
@@ -776,7 +596,7 @@ prompt = ChatPromptTemplate.from_messages([
     - 判断标准：信息时效性极短，交给底层默认的短期滑动窗口记忆处理即可。
     ==============================
      工作流如下：
-    1. 🔍 核心能力：遇到不知道的公司用 search_company_ticker，查最新价格用 get_stock_price，查30天走势并画图用 draw_stock_chart，查本地资料用 analyze_local_document。
+    1. 🔍 核心能力：遇到不知道的公司用 search_company_ticker，查本地资料用 analyze_local_document。
     2. ✍️ 智能输出调度（最高法则）：
        - ⚡ 轻量级问答：如果用户只是单纯询问价格或简单问题，请直接在终端简明扼要地回答，绝对不要调用 write_local_file。
        - 📝 深度报告生成：当用户要求“生成报告”、“保存到本地”、“写研报”时，你必须整合分析。
@@ -786,7 +606,7 @@ prompt = ChatPromptTemplate.from_messages([
     你**必须且只能**将写好的整篇 Markdown 内容作为 `content` 参数，调用 `write_local_file` 工具保存！
     终端最终只需冷酷地汇报一句：“✅ 任务执行完毕。深度分析报告已生成，本地路径为：xxx”。
     
-    3. 🖼️ 图文并茂：生成报告时，请务必先调用 draw_stock_chart 生成走势图，并在传给 write_local_file 的 Markdown 内容中，使用 `![图表](./xxx.png)` 将图片嵌入。
+    3. 🖼️ 图文并茂：生成报告时，请务必先调用 draw_universal_stock_chart 生成走势图，并在传给 write_local_file 的 Markdown 内容中，使用 `![图表](./xxx.png)` 将图片嵌入。
     4. 🧠 记忆系统：结合用户历史告知你的持仓情况或偏好进行解读。"""),
     ("placeholder", "{chat_history}"),
     ("human", "{input}"),
