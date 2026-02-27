@@ -133,15 +133,29 @@ def search_company_ticker(company_name: str) -> str:
 @tool
 def read_local_file(file_path: str) -> str:
     """
-    当需要读取本地文件内容时调用此工具。
-    输入参数为文件的绝对路径或相对路径（例如：'config.json' 或 '/Users/xxx/data.txt'）。
+    当需要读取本地沙箱中的文件内容（如之前生成的报告）时调用此工具。
+    输入参数为沙箱内的文件名或相对路径（例如：'report.md' 或 'data/info.txt'）。
+    注意：出于安全限制，你只能读取沙箱(agent_workspace)内的文件。
     """
     try:
-        if not os.path.exists(file_path):
-            return f"错误：找不到文件 {file_path}"
-        with open(file_path, 'r', encoding='utf-8') as f:
+        # 1. 路径拼接与绝对路径解析
+        target_path = (SANDBOX_DIR / file_path).resolve()
+        
+        # 2. 🌟 核心防御：使用 is_relative_to 替代 startswith
+        # 这是 Python 3.9+ 提供的原生方法，它按层级严格判断，彻底杜绝平级恶意目录的绕过
+        if not target_path.is_relative_to(SANDBOX_DIR):
+            return "❌ 安全拦截：探测到越权操作！你试图读取沙箱外部的文件，已被系统拒绝。"
+
+        # 3. 检查文件是否存在
+        if not target_path.exists():
+            return f"❌ 找不到文件: {target_path.name}"
+            
+        # 4. 安全执行读取
+        with open(target_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        return f"文件 {file_path} 的内容是:\n{content}"
+            
+        return f"文件 {target_path.name} 的内容是:\n{content}"
+        
     except Exception as e:
         return f"读取文件出错: {str(e)}"
 
@@ -192,7 +206,7 @@ def analyze_local_document(file_name: str, query: str) -> str:
     try:
         target_path = (KB_DIR / file_name).resolve()
         
-        if not str(target_path).startswith(str(KB_DIR)):
+        if not target_path.is_relative_to(KB_DIR):
             return "❌ 安全拦截：你试图读取知识库以外的文件！"
 
         if not target_path.exists():
