@@ -392,33 +392,42 @@ def list_kb_files() -> str:
 # 插件 7：长期记忆提取
 # ==========================================
 @tool
-def remember_user_fact(fact: str) -> str:
+def update_user_memory(key: str, value: str) -> str:
     """
-    🚨【记忆写入指令】：
-    当你得知关于用户的关键信息（如：持仓情况、成本价、投资偏好、个人习惯等）时，必须调用此工具。
-    输入参数 fact 是一句简短的客观事实描述，例如："用户持有 100 股 TSLA" 或 "用户不喜欢看长篇大论"。
+    🚨【记忆更新指令】：
+    用于记录或更新用户的关键长期信息（如：股票持仓、投资偏好、个人习惯）。
+    - 参数 key: 记忆的分类标签，必须是简短明确的名词（例如："苹果公司持仓"、"风险偏好"、"报告格式要求"）。
+    - 参数 value: 具体的客观事实数据（例如："150股，成本150美元"、"激进型"、"只看Markdown结论"）。
+    注意：如果同一个 key 已经存在，新的 value 将直接【覆盖】旧数据！如果用户清仓了，你可以把 value 设置为 "已清仓" 或 "无"。
     """
     try:
-        # 确保文件存在
+        # 初始化 JSON
         if not USER_PROFILE_PATH.exists():
             USER_PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
             with open(USER_PROFILE_PATH, 'w', encoding='utf-8') as f:
-                json.dump({"facts": []}, f)
+                json.dump({}, f)
                 
+        # 读取旧记忆
         with open(USER_PROFILE_PATH, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        # 防止重复写入
-        if fact not in data["facts"]:
-            data["facts"].append(fact)
-            with open(USER_PROFILE_PATH, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            return f"✅ 长期记忆已更新：{fact}"
-        return "该记忆已存在。"
+        # 🌟 核心：覆盖或新增键值对
+        old_value = data.get(key)
+        data[key] = value
+        
+        # 写入新记忆
+        with open(USER_PROFILE_PATH, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            
+        if old_value:
+            return f"✅ 记忆已更新：[{key}] 由 '{old_value}' 变更为 '{value}'"
+        else:
+            return f"✅ 新记忆已记录：[{key}] -> '{value}'"
+            
     except Exception as e:
         return f"记忆写入失败: {str(e)}"
 
-tools = [get_stock_price, draw_stock_chart, search_company_ticker, read_local_file, write_local_file, list_kb_files, analyze_local_document, remember_user_fact]
+tools = [get_stock_price, draw_stock_chart, search_company_ticker, read_local_file, write_local_file, list_kb_files, analyze_local_document, update_user_memory]
 
 # ==========================================
 # 🧠 配置长效记忆引擎 (Long-Term Memory)
@@ -443,15 +452,16 @@ def get_session_history(session_id: str):
     return history
 
 def get_user_profile():
-    """读取用户长期记忆核心，转化为字符串注入 Prompt"""
+    """读取 KV 结构的长期记忆"""
     if not USER_PROFILE_PATH.exists():
         return "暂无长期记忆"
     try:
         with open(USER_PROFILE_PATH, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        if not data.get("facts"):
+        if not data:
             return "暂无长期记忆"
-        return "\n".join([f"- {fact}" for fact in data["facts"]])
+        # 转化为大模型易读的格式
+        return "\n".join([f"- 【{k}】: {v}" for k, v in data.items()])
     except:
         return "暂无长期记忆"
 
