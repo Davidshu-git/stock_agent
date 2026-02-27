@@ -1,90 +1,76 @@
-# 🤖 Stock Agent: 具备多级缓存与安全沙箱的本地 RAG 智能体
+# Stock Agent: 具备多级缓存与状态机记忆的智能体架构
 
-Stock Agent 是一个基于 LangChain 构建的本地 AI 智能体应用。它能够通过互联网检索实时股票数据，并安全、高效地读取本地知识库（PDF/Markdown 等）。
+Stock Agent 是一个基于 LangChain 构建的本地化 AI 智能体应用。本项目并非简单的 LLM API 套壳，而是在底层架构上重点攻克了 **大模型上下文遗忘**、**高频 RAG 检索性能瓶颈** 以及 **本地文件 I/O 安全** 等真实落地场景中的工程痛点。
 
-有别于常规的套壳脚本，本项目在底层架构上着重解决了大模型落地的两个核心工程痛点：通过 **L1内存/L2硬盘混合持久化缓存** 解决了高频 RAG 检索的性能瓶颈；通过 **严格的路径级防逃逸沙箱** 保障了本地 I/O 的安全性。
+本项目旨在探索如何以极其轻量级的方式（零重量级数据库依赖），在本地构建一个高可用、状态一致且安全的专属量化分析智能体。
 
+## 💡 核心工程实践与技术亮点
 
-## ✨ 核心架构与功能亮点
+### 1. 混合架构 RAG 引擎 (L1/L2 Cache)
+针对本地文档检索（PDF/Markdown 等）进行了存储分层级的极致优化，极大地降低了 Embedding API 开销与响应延迟：
+* **L1 内存池 (Memory Dict)**：实现同会话内热点文档重复查询的“零延迟”命中。
+* **L2 硬盘持久化 (FAISS Disk Serialization)**：跨进程/跨重启复用向量索引。
+* **热更新机制**：通过比对目标文件的修改时间戳 (`mtime`)，实现文档变更后的平滑重建与缓存穿透写入。
 
-* **🛡️ 企业级安全沙箱 (Path Traversal 防御)**
-    本地文件的读写操作（`read_local_file` / `write_local_file`）被严格限制在 `agent_workspace` 目录下。底层使用 Python 3.9+ 的 `pathlib.is_relative_to()` 进行绝对路径防越权拦截，彻底杜绝恶意 Prompt 注入导致的系统文件泄露。
-* **⚡ L1/L2 混合持久化 RAG 引擎**
-    针对本地文档检索进行了极致优化：
-    * **L1 内存池缓存**：同会话内重复查询零延迟。
-    * **L2 硬盘持久化 (`embeddings/`)**：跨进程/重启复用 FAISS 向量索引，极大节省大模型 Embedding API 开销。
-    * **热更新机制**：自动校验文件修改时间戳 (`mtime`)，文档修改后自动重建对应索引，无需重启服务。
-* **💻 赛博朋克终端交互 (Hacker UI)**
-    抛弃枯燥的默认日志。使用 `rich` 库重写 Callback 拦截器，实时高亮打印 Agent 思考流与工具调度指令；结合 `prompt_toolkit` 提供支持方向键、历史记录（上翻/下翻）的丝滑输入体验。
-* **🧠 智能工具链编排**
-    集成 6 大核心插件，支持雅虎财经实时报价 (`yfinance`)、股票代码盲搜 (`ddgs`) 以及全格式本地文件管理。
+### 2. 双轨记忆系统与一致性保障 (Dual-Track Memory)
+摈弃了粗暴的全量历史上下文拼接，引入了“短/长期分离”的记忆流：
+* **短期滑动窗口**：自动按阈值截断历史对话，控制 Token 爆炸并保证推理速度。
+* **长期 KV 状态机**：通过 Function Calling 提取用户的投资偏好与核心持仓，更新至本地状态字典。
+* **并发控制**：引入 `FileLock` 文件锁机制，保障在异步或多智能体场景下写长期记忆时的文件一致性（原子操作），避免脏读脏写。
 
-## 📂 目录结构说明
+### 3. 企业级安全沙箱 (Path Traversal 防御)
+在将本地文件系统的读写权限 (`read_local_file` / `write_local_file`) 赋予 LLM 时，实施了严格的安全防御：
+* 弃用脆弱的字符串 `startswith` 匹配，底层采用 Python 3.9+ 的 `pathlib.is_relative_to()` 进行层级校验。
+* 彻底杜绝 LLM 产生幻觉或遭受恶意 Prompt 注入时，通过 `../../` 目录穿越漏洞导致的系统级文件外泄。
 
-程序首次运行后，会自动在根目录创建以下关键文件夹（均已加入 `.gitignore` 防止敏感数据外泄）：
+### 4. 终端原生视觉渲染 (iTerm2 Inline Engine)
+打通了终端底层协议与数据可视化库的链路：
+* 拦截 `mplfinance` 生成的本地金融图表，将其编码为 Base64 流。
+* 配合自研正则切割模块提取大模型输出的 Markdown 语法，实现富文本与 K 线图在 iTerm2 终端的原生内联渲染，打造极佳的极客级 CLI 体验。
+
+## 🛠️ 技术栈选型
+
+* **LLM Orchestration**: LangChain, LangChain-OpenAI
+* **Core Logic & Tools**: Python 3.9+, Pydantic
+* **Vector Store & Embeddings**: FAISS, DashScope Embeddings
+* **Financial Data & Viz**: `yfinance`, `pandas`, `mplfinance`
+* **UI & Interaction**: `rich`, `prompt_toolkit`
+* **State Management**: 本地 JSON + `filelock`
+
+## 📂 系统架构目录
 
 ```text
 stock_agent/
-├── agent_workspace/    # 🔒 AI 操作沙箱：Agent 自动生成的分析报告和文件会存放在这里
-├── knowledge_base/     # 📚 本地知识库：把你的 PDF、Markdown、TXT 研报扔进这里，供 Agent 学习
-├── embeddings/         # 💾 L2 缓存层：自动生成的 FAISS 向量数据库持久化目录
-├── main.py             # 核心逻辑入口代码
-├── .env                # 环境变量配置（需手动创建）
-└── .gitignore          # Git 忽略规则
+├── agent_workspace/    # 🔒 AI 读写沙箱：隔离报告与图片等生成文件
+├── knowledge_base/     # 📚 本地知识库：存放待向量化的源文档
+├── embeddings/         # 💾 L2 缓存层：FAISS 向量库持久化切片目录
+├── memory/             # 🧠 状态中枢：存放短期日志与持久化特征 (user_profile.json)
+├── main.py             # 核心系统编排入口
+├── .env                # 环境变量 (API Keys 等)
+└── requirements.txt    # 锁定版本依赖
 
 ```
 
-## 🚀 快速启动
+## 🚀 部署与运行
 
-### 1. 环境准备
-
-确保你的 Python 版本 >= 3.9，推荐使用虚拟环境：
-
+1. 克隆项目并初始化虚拟环境：
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # macOS/Linux
-# 或 .venv\Scripts\activate # Windows
+source .venv/bin/activate
+pip install -r requirements.txt
 
 ```
 
-安装核心依赖包：
 
-```bash
-pip install langchain langchain-openai langchain-community 
-pip install yfinance ddgs python-dotenv prompt_toolkit rich
-pip install pypdf faiss-cpu tiktoken dashscope
-
-```
-
-### 2. 配置环境变量
-
-在项目根目录创建 `.env` 文件，并填入你的阿里云百炼 API Key（兼容 OpenAI 接口）：
-
+2. 在根目录配置 `.env` 注入模型密钥：
 ```env
-DASHSCOPE_API_KEY=sk-你的真实阿里云密钥
+DASHSCOPE_API_KEY=your_api_key_here
 
 ```
 
-### 3. 运行智能体
 
-一切准备就绪，启动极客终端：
-
+3. 在终端中启动系统：
 ```bash
 python main.py
 
 ```
-
-## 🛠️ 交互示例
-
-你可以直接在终端向它下达复合型指令：
-
-> **“对比一下微软和苹果昨天的表现。然后看看知识库里有没有相关的研报，综合一下核心数据，最后帮我把分析结果写成一份 markdown 报告存到本地。”**
-
-Agent 将自动规划路线：
-
-1. 搜索代码 -> 2. 查股价 -> 3. 扫描目录 -> 4. 建立索引并检索文档 -> 5. 撰写并保存 Markdown 报告。
-
-## ⚠️ 注意事项
-
-* 本项目默认使用 `qwen-max` 模型驱动，因其具备极强的逻辑规划和 Function Calling 能力。你也可以在代码中无缝切换为 OpenAI 的 GPT-4o 或其他兼容大模型。
-* FAISS 的本地加载开启了 `allow_dangerous_deserialization=True`，因向量文件均由本地生成，属安全行为。请勿随意将不明来源的 `.pkl` 文件放入 `embeddings` 目录。
