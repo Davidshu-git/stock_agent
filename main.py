@@ -140,8 +140,9 @@ def draw_stock_chart(ticker: str) -> str:
         if hist.empty:
             return f"❌ 未找到 {ticker} 的历史数据，无法绘图。"
 
-        # 生成带有时间戳的文件名，防止图片被覆盖
-        chart_filename = f"{ticker}_30d_chart_{datetime.now().strftime('%Y%m%d%H%M%S')}.png"
+        # 🌟 核心修复：移除 datetime 时间戳，使用确定性的纯粹命名！
+        # 这样大模型绝对不会再拼错图片路径，且能自动覆盖旧图，保持沙箱整洁
+        chart_filename = f"{ticker}_30d_chart.png"
         
         # 将图片路径强制锁定在沙箱目录内 (复用我们之前的防逃逸安全屋)
         chart_path = (SANDBOX_DIR / chart_filename).resolve()
@@ -163,9 +164,9 @@ def draw_stock_chart(ticker: str) -> str:
         latest_close = round(hist['Close'].iloc[-1], 2)
         
         return (
-            f"✅ {ticker} 的30天K线图已成功生成！图片已保存在沙箱中。\n"
-            f"【统计摘要】期间最高价: {max_price}, 最低价: {min_price}, 最新收盘价: {latest_close}。\n"
-            f"⚠️ 【强制指令】：你必须在最终的 Markdown 分析报告中，使用相对路径语法 `![{ticker} 走势图](./{chart_filename})` 将该图表嵌入进去，并结合上述统计摘要对走势进行解读。"
+            f"✅ {ticker} 的30天K线图已成功生成！文件名为：{chart_filename}。\n"
+            f"【统计摘要】最高价: {max_price}, 最低价: {min_price}, 最新价: {latest_close}。\n"
+            f"🚨【强制语法】：在你马上要生成的 Markdown 报告中，必须严格使用 `![{ticker}走势图](./{chart_filename})` 插入此图片，一个字都不能改！"
         )
     except Exception as e:
         return f"绘制图表出错: {str(e)}"
@@ -229,9 +230,10 @@ def read_local_file(file_path: str) -> str:
 @tool
 def write_local_file(file_path: str, content: str) -> str:
     """
-    当需要把文本、报告或代码保存到本地计算机时调用此工具。
-    输入参数为目标文件名或相对路径（例如：'report.md' 或 'data/info.txt'）。
-    注意：出于安全限制，你只能将文件写入到分配给你的工作区内，请直接提供文件名即可。
+    🚨【强制交付通道】：
+    当你被要求“写报告”、“生成分析”、“保存到本地”时，**绝对禁止**在聊天窗口直接输出 Markdown 文本！
+    你必须且只能调用此工具，将完整排版好的 Markdown 内容作为 `content` 参数传入。
+    输入参数 file_path 为目标文件名（例如：'report.md'）。
     """
     try:
         # 1. 路径拼接与绝对路径解析 (核心防御步 1)
@@ -399,7 +401,7 @@ def get_session_history(session_id: str):
 
 # 使用 ChatOpenAI 包装器，但把底层请求地址指向阿里云
 llm = ChatOpenAI(
-    model="qwen-max", # 强烈推荐用 qwen-max，处理复杂逻辑和多工具路由最稳
+    model="qwen3.5-plus", # 强烈推荐用 qwen-max，处理复杂逻辑和多工具路由最稳
     api_key=dashscope_key,
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", # 核心：指向阿里兼容接口
     temperature=0
@@ -407,10 +409,18 @@ llm = ChatOpenAI(
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", """你是一个极客风格的全栈量化分析师与系统助手。工作流如下：
-    1. 信息获取：遇到不知道的公司用 search_company_ticker，查价格用 get_stock_price，查历史走势并生成K线图用 draw_stock_chart，查本地资料用 analyze_local_document。
-    2. 【最高优先级指令】：你的所有分析任务，最终都**必须**生成一份排版精美的 Markdown 报告，并调用 write_local_file 存入沙箱。如果调用了绘图工具，必须在报告合适的位置嵌入该图片（如 `![图表](./xxx.png)`）。
-    3. 终端回复：文件保存成功后，在终端中只需要汇报“分析报告已生成，路径为：xxx”，不要长篇大论。
-    4. 🧠 记忆系统：你现在拥有了跨越重启的长期记忆。在回答时，请主动结合用户历史告诉过你的持仓情况或上下文进行个性化分析。"""),
+    1. 🔍 核心能力：遇到不知道的公司用 search_company_ticker，查最新价格用 get_stock_price，查30天走势并画图用 draw_stock_chart，查本地资料用 analyze_local_document。
+    2. ✍️ 智能输出调度（最高法则）：
+       - ⚡ 轻量级问答：如果用户只是单纯询问价格或简单问题，请直接在终端简明扼要地回答，绝对不要调用 write_local_file。
+       - 📝 深度报告生成：当用户要求“生成报告”、“保存到本地”、“写研报”时，你必须整合分析。
+       
+    🚨【绝对红线指令 - 报告怎么写】：
+    如果你判断当前任务需要生成报告，你**严禁**在最终的终端回复（Final Answer）中直接输出报告的 Markdown 文本！
+    你**必须且只能**将写好的整篇 Markdown 内容作为 `content` 参数，调用 `write_local_file` 工具保存！
+    终端最终只需冷酷地汇报一句：“✅ 任务执行完毕。深度分析报告已生成，本地路径为：xxx”。
+    
+    3. 🖼️ 图文并茂：生成报告时，请务必先调用 draw_stock_chart 生成走势图，并在传给 write_local_file 的 Markdown 内容中，使用 `![图表](./xxx.png)` 将图片嵌入。
+    4. 🧠 记忆系统：结合用户历史告知你的持仓情况或偏好进行解读。"""),
     ("placeholder", "{chat_history}"),
     ("human", "{input}"),
     ("placeholder", "{agent_scratchpad}"),
