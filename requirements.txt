@@ -1,29 +1,31 @@
 # ==========================================
 # OmniStock Agent - 核心生产依赖清单
+# 依赖策略: 应用级项目，使用 ~= 锁定 Minor 版本，防止破坏性更新
 # ==========================================
 
 # 1. 🤖 AI 编排与大模型基座 (LLM & Orchestration)
-langchain>=0.3.0
-langchain-openai>=0.3.0
-langchain-community>=0.3.0
+langchain~=0.3.0
+langchain-core~=0.3.0              # 核心抽象层 (显式声明)
+langchain-openai~=0.3.0            # OpenAI 协议兼容适配器
+langchain-community~=0.3.0         # 社区生态加载器
+langchain-text-splitters~=0.3.0    # 文本切分器 (显式声明)
+tiktoken~=0.12.0                   # 词元分词器底层支持
 
 # 2. 🧠 RAG 知识库与向量引擎 (Retrieval-Augmented Generation)
-faiss-cpu>=1.13.0           # 核心本地向量数据库
-pypdf>=6.7.0                # PDF 文档解析
-dashscope>=1.25.0           # 阿里云百炼 Embeddings 底层通信
+faiss-cpu~=1.13.0                  # 核心本地向量数据库
+pypdf~=6.7.0                       # PDF 文档解析
+dashscope~=1.25.0                  # 阿里云百炼 Embeddings 底层通信
 
 # 3. 📈 量化数据源与可视化 (Financial Data & Viz)
-yfinance>=1.2.0             # 美股/港股数据引擎
-akshare>=1.15.0             # A股开源数据引擎
-pandas>=2.2.0               # 数据清洗与序列化
-mplfinance>=0.12.0          # 专用的金融 K线图渲染引擎
+yfinance~=1.2.0                    # 统一的全球股票数据引擎 (美股/港股/A股)
+mplfinance~=0.12.0                 # 专用的金融 K线图渲染引擎
 
 # 4. 🛠️ 核心系统组件与容错机制 (System Core & Resiliency)
-python-dotenv>=1.2.0        # 环境变量注入
-filelock>=3.13.0            # 本地持久化记忆的原子锁
-tenacity>=9.1.0             # 高可用指数退避重试框架
-ddgs>=9.8.0                 # DuckDuckGo 搜索(股票代码盲搜)
+python-dotenv~=1.2.0               # 环境变量注入
+filelock~=3.13.0                   # 本地持久化记忆的原子锁
+tenacity~=9.1.0                    # 高可用指数退避重试框架
+ddgs~=9.8.0                        # DuckDuckGo 搜索(股票代码盲搜)
 
 # 5. 💻 极客终端交互 UI (Terminal Hacker Experience)
-rich>=13.0.0                # 终端 Markdown 与自适应布局排版
-prompt_toolkit>=3.0.0       # 带历史记录的极客级终端输入流
+rich~=14.3.0                       # 终端 Markdown 与自适应布局排版
+prompt_toolkit~=3.0.0              # 带历史记录的极客级终端输入流
