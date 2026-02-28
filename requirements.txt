@@ -18,7 +18,7 @@ dashscope~=1.25.0                  # 阿里云百炼 Embeddings 底层通信
 
 # 3. 📈 量化数据源与可视化 (Financial Data & Viz)
 yfinance~=1.2.0                    # 统一的全球股票数据引擎 (美股/港股/A股)
-mplfinance~=0.12.0                 # 专用的金融 K线图渲染引擎
+mplfinance==0.12.10b0              # 专用的金融 K线图渲染引擎
 
 # 4. 🛠️ 核心系统组件与容错机制 (System Core & Resiliency)
 python-dotenv~=1.2.0               # 环境变量注入
