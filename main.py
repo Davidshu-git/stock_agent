@@ -555,7 +555,7 @@ def get_user_profile():
 
 # 使用 ChatOpenAI 包装器，但把底层请求地址指向阿里云
 llm = ChatOpenAI(
-    model="qwen3.5-plus", # 强烈推荐用 qwen-max，处理复杂逻辑和多工具路由最稳
+    model="qwen3.5-397b-a17b", # 强烈推荐用 qwen-max，处理复杂逻辑和多工具路由最稳
     api_key=dashscope_key,
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", # 核心：指向阿里兼容接口
     temperature=0,

@@ -1,110 +1,29 @@
-aiohappyeyeballs==2.6.1
-aiohttp==3.13.3
-aiosignal==1.4.0
-annotated-types==0.7.0
-anyio==4.12.1
-async-timeout==4.0.3
-attrs==25.4.0
-beautifulsoup4==4.14.3
-brotli==1.2.0
-certifi==2026.2.25
-cffi==2.0.0
-charset-normalizer==3.4.4
-click==8.1.8
-cryptography==46.0.5
-curl_cffi==0.13.0
-dashscope==1.25.12
-dataclasses-json==0.6.7
-ddgs==9.8.0
-distro==1.9.0
-exceptiongroup==1.3.1
-faiss-cpu==1.13.0
-filetype==1.2.0
-frozendict==2.4.7
-frozenlist==1.8.0
-google-ai-generativelanguage==0.10.0
-google-api-core==2.30.0
-google-auth==2.48.0
-googleapis-common-protos==1.72.0
-grpcio==1.78.1
-grpcio-status==1.78.1
-h11==0.16.0
-h2==4.3.0
-hpack==4.1.0
-httpcore==1.0.9
-httpx==0.28.1
-httpx-sse==0.4.3
-hyperframe==6.1.0
-idna==3.11
-jiter==0.13.0
-jsonpatch==1.33
-jsonpointer==3.0.0
-langchain==0.3.27
-langchain-community==0.3.31
-langchain-core==0.3.83
-langchain-google-genai==2.1.12
-langchain-openai==0.3.35
-langchain-text-splitters==0.3.11
-langgraph==0.6.11
-langgraph-checkpoint==2.1.2
-langgraph-prebuilt==0.6.5
-langgraph-sdk==0.2.9
-langsmith==0.4.37
-lxml==6.0.2
-markdown-it-py==3.0.0
-marshmallow==3.26.2
-mdurl==0.1.2
-multidict==6.7.1
-multitasking==0.0.12
-mypy_extensions==1.1.0
-numpy==2.0.2
-openai==2.24.0
-orjson==3.11.5
-ormsgpack==1.11.0
-packaging==25.0
-pandas==2.3.3
-peewee==4.0.0
-platformdirs==4.4.0
-primp==0.15.0
-prompt_toolkit==3.0.52
-propcache==0.4.1
-proto-plus==1.27.1
-protobuf==6.33.5
-pyasn1==0.6.2
-pyasn1_modules==0.4.2
-pycparser==2.23
-pydantic==2.12.5
-pydantic-settings==2.11.0
-pydantic_core==2.41.5
-Pygments==2.19.2
-pypdf==6.7.3
-python-dateutil==2.9.0.post0
-python-dotenv==1.2.1
-pytz==2025.2
-PyYAML==6.0.3
-regex==2026.1.15
-requests==2.32.5
-requests-toolbelt==1.0.0
-rich==14.3.3
-rsa==4.9.1
-six==1.17.0
-sniffio==1.3.1
-socksio==1.0.0
-soupsieve==2.8.3
-SQLAlchemy==2.0.47
-tenacity==9.1.2
-tiktoken==0.12.0
-tqdm==4.67.3
-typing-inspect==0.9.0
-typing-inspection==0.4.2
-typing_extensions==4.15.0
-tzdata==2025.3
-urllib3==1.26.20
-uuid_utils==0.14.1
-wcwidth==0.6.0
-websocket-client==1.9.0
-websockets==15.0.1
-xxhash==3.6.0
-yarl==1.22.0
-yfinance==1.2.0
-zstandard==0.25.0
+# ==========================================
+# OmniStock Agent - 核心生产依赖清单
+# ==========================================
+
+# 1. 🤖 AI 编排与大模型基座 (LLM & Orchestration)
+langchain>=0.3.0
+langchain-openai>=0.3.0
+langchain-community>=0.3.0
+
+# 2. 🧠 RAG 知识库与向量引擎 (Retrieval-Augmented Generation)
+faiss-cpu>=1.13.0           # 核心本地向量数据库
+pypdf>=6.7.0                # PDF 文档解析
+dashscope>=1.25.0           # 阿里云百炼 Embeddings 底层通信
+
+# 3. 📈 量化数据源与可视化 (Financial Data & Viz)
+yfinance>=1.2.0             # 美股/港股数据引擎
+akshare>=1.15.0             # A股开源数据引擎
+pandas>=2.2.0               # 数据清洗与序列化
+mplfinance>=0.12.0          # 专用的金融 K线图渲染引擎
+
+# 4. 🛠️ 核心系统组件与容错机制 (System Core & Resiliency)
+python-dotenv>=1.2.0        # 环境变量注入
+filelock>=3.13.0            # 本地持久化记忆的原子锁
+tenacity>=9.1.0             # 高可用指数退避重试框架
+ddgs>=9.8.0                 # DuckDuckGo 搜索(股票代码盲搜)
+
+# 5. 💻 极客终端交互 UI (Terminal Hacker Experience)
+rich>=13.0.0                # 终端 Markdown 与自适应布局排版
+prompt_toolkit>=3.0.0       # 带历史记录的极客级终端输入流
