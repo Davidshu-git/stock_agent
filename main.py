@@ -2,9 +2,7 @@ import os
 import json
 from dotenv import load_dotenv
 from pathlib import Path
-import pandas as pd
 import mplfinance as mpf
-import akshare as ak
 from datetime import datetime, timedelta
 from filelock import FileLock
 import yfinance as yf
@@ -30,7 +28,6 @@ from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.styles import Style
 # 优化显示效果
 from rich.console import Console
-from rich.panel import Panel
 from rich.markdown import Markdown   # 🌟 新增：Markdown 渲染引擎
 from rich.rule import Rule           # 🌟 新增：自适应分隔线组件
 from langchain.callbacks.base import BaseCallbackHandler
@@ -160,9 +157,6 @@ def get_universal_stock_price(ticker: str, date: str = None) -> str:
     - 参数 date (可选): 'YYYY-MM-DD'。未提供则默认返回最近交易日。
     """
     try:
-        import yfinance as yf
-        from datetime import datetime, timedelta
-        
         # 🌟 调用智能中间件
         formatted_ticker = format_universal_ticker(ticker)
         stock = yf.Ticker(formatted_ticker)
