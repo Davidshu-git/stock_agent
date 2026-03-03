@@ -70,7 +70,11 @@ pip install -r requirements.txt
 
 2. 在根目录配置 `.env` 注入模型密钥：
 ```env
+# 主模型 API Key（用于聊天推理）
 DASHSCOPE_API_KEY=your_api_key_here
+
+# Embedding 模型 API Key（用于向量检索 RAG）
+DASHSCOPE_EMBEDDING_KEY=your_embedding_api_key_here
 
 ```
 
