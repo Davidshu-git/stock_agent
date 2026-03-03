@@ -44,10 +44,14 @@ load_dotenv()
 # 安全地获取 Key
 # 使用 os.getenv() 获取，如果 .env 里没配，它会返回 None 而不是直接崩溃
 dashscope_key = os.getenv("DASHSCOPE_API_KEY")
+embedding_key = os.getenv("DASHSCOPE_EMBEDDING_KEY")
 
 # 在程序刚启动时就检查关键依赖，如果没配 Key，立刻阻断并报错，而不是等跑了一半才死掉
 if not dashscope_key:
     raise ValueError("❌ 致命错误：未在 .env 文件或环境变量中找到 DASHSCOPE_API_KEY！请检查配置。")
+
+if not embedding_key:
+    raise ValueError("❌ 致命错误：未在 .env 文件或环境变量中找到 DASHSCOPE_EMBEDDING_KEY！请检查配置。")
 
 # 强行清除当前脚本的代理环境变量，强制直连
 os.environ.pop('http_proxy', None)
@@ -343,8 +347,8 @@ def analyze_local_document(file_name: str, query: str) -> str:
         meta_file = doc_cache_dir / "meta.json"
         
         embeddings = DashScopeEmbeddings(
-            dashscope_api_key=dashscope_key,
-            model="text-embedding-v3", 
+            dashscope_api_key=embedding_key,
+            model="text-embedding-v3",
         )
         
         # ==========================================
