@@ -179,14 +179,27 @@ def get_universal_stock_price(ticker: str, date: str = None) -> str:
             
         if hist.empty:
             return f"❌ 未找到标的 {formatted_ticker} 在 {date_label} 的数据。"
-            
-        open_p = round(float(hist['Open'].iloc[0]), 2)
-        close_p = round(float(hist['Close'].iloc[0]), 2)
-        actual_date = hist.index[0].strftime("%Y-%m-%d")
         
-        return f"✅ {formatted_ticker} ({actual_date}) - 开盘价: {open_p}, 收盘价: {close_p}"
+        # 防御性数据提取：防止 API 返回部分字段缺失
+        try:
+            import pandas as pd
+            open_val = hist['Open'].iloc[0]
+            close_val = hist['Close'].iloc[0]
+            
+            # 检查 NaN 值
+            if pd.isna(open_val) or pd.isna(close_val):
+                return f"❌ {formatted_ticker} 在 {date_label} 的数据不完整（存在空值）。"
+            
+            open_p = round(float(open_val), 2)
+            close_p = round(float(close_val), 2)
+            actual_date = hist.index[0].strftime("%Y-%m-%d")
+        except (KeyError, IndexError) as e:
+            return f"❌ {formatted_ticker} 数据格式异常：{type(e).__name__} - {str(e)}"
+        
+        return f"✅ {formatted_ticker} ({actual_date}) - 开盘价：{open_p}, 收盘价：{close_p}"
     except Exception as e:
-        return f"查询出错，已停止重试: {str(e)}"
+        return f"查询出错，已停止重试：{type(e).__name__} - {str(e)}"
+    
     
 # ==========================================
 # 插件 1.5：K线图与 30 天走势可视化
@@ -227,8 +240,10 @@ def draw_universal_stock_chart(ticker: str) -> str:
             f"【摘要】最高: {max_price}, 最低: {min_price}, 最新: {latest_close}。\n"
             f"🚨【强制语法】：必须严格使用 `![走势图](./{chart_filename})` 嵌入 Markdown 中！"
         )
+    except (KeyError, IndexError) as e:
+        return f"❌ {formatted_ticker} 数据格式异常：{type(e).__name__} - {str(e)}"
     except Exception as e:
-        return f"绘图出错，已停止重试: {str(e)}"
+        return f"绘图出错，已停止重试：{type(e).__name__} - {str(e)}"
 
 # ==========================================
 # 插件 2：代码搜索工具
@@ -293,8 +308,14 @@ def read_local_file(file_path: str) -> str:
             
         return f"文件 {target_path.name} 的内容是:\n{content}"
         
+    except FileNotFoundError:
+        return f"❌ 文件不存在：{target_path.name}"
+    except PermissionError:
+        return f"❌ 权限不足：无法读取 {target_path.name}"
+    except UnicodeDecodeError:
+        return f"❌ 编码错误：{target_path.name} 不是有效的 UTF-8 文件"
     except Exception as e:
-        return f"读取文件出错: {str(e)}"
+        return f"读取文件出错：{type(e).__name__} - {str(e)}"
 
 # ==========================================
 # 插件 4：写入本地文件
@@ -329,8 +350,14 @@ def write_local_file(file_path: str, content: str) -> str:
             
         return f"✅ 成功！报告已安全写入沙箱: {target_path}"
         
+    except FileNotFoundError:
+        return f"❌ 路径不存在：无法创建目录"
+    except PermissionError:
+        return f"❌ 权限不足：无法写入 {target_path}"
+    except OSError as e:
+        return f"❌ 系统错误：{type(e).__name__} - {str(e)}"
     except Exception as e:
-        return f"写入文件出错: {str(e)}"
+        return f"写入文件出错：{type(e).__name__} - {str(e)}"
 
 # ==========================================
 # 插件 5：RAG 本地文档检索器 (L1内存 + L2硬盘 混合持久化架构)
@@ -358,10 +385,13 @@ def analyze_local_document(file_name: str, query: str) -> str:
         doc_cache_dir = FAISS_DB_DIR / f"{file_name}_vstore"
         meta_file = doc_cache_dir / "meta.json"
         
-        embeddings = DashScopeEmbeddings(
-            dashscope_api_key=embedding_key,
-            model="text-embedding-v3",
-        )
+        try:
+            embeddings = DashScopeEmbeddings(
+                dashscope_api_key=embedding_key,
+                model="text-embedding-v3",
+            )
+        except Exception as e:
+            return f"❌ 向量模型初始化失败：{type(e).__name__} - {str(e)}。请检查 DASHSCOPE_EMBEDDING_KEY 配置和网络连接。"
         
         # ==========================================
         # ⚡ 检查 L1 缓存 (内存)
@@ -444,8 +474,12 @@ def analyze_local_document(file_name: str, query: str) -> str:
         context = "\n---\n".join([doc.page_content for doc in relevant_docs])
         return f"✅ 从文档 {file_name} 中检索到以下核心信息：\n{context}\n\n请根据以上数据回答。"
         
+    except json.JSONDecodeError:
+        return f"❌ 文档元数据损坏：JSONDecodeError"
+    except FileNotFoundError:
+        return f"❌ 文档不存在：{file_name}"
     except Exception as e:
-        return f"解析或检索文档出错: {str(e)}"
+        return f"解析或检索文档出错：{type(e).__name__} - {str(e)}"
 
 # ==========================================
 # 插件 6：给 Agent 一双“眼睛”去查看知识库
@@ -462,8 +496,12 @@ def list_kb_files() -> str:
         if not files:
             return "当前知识库文件夹为空，没有找到任何支持的文件。"
         return f"知识库中当前有以下文件可以读取:\n" + "\n".join(files)
+    except FileNotFoundError:
+        return "❌ 知识库目录不存在"
+    except PermissionError:
+        return "❌ 权限不足：无法访问知识库目录"
     except Exception as e:
-        return f"读取目录出错: {str(e)}"
+        return f"读取目录出错：{type(e).__name__} - {str(e)}"
 
 # ==========================================
 # 插件 7：长期记忆提取
@@ -499,8 +537,12 @@ def update_user_memory(key: str, value: str) -> str:
                 json.dump(data, f, ensure_ascii=False, indent=2)
 
         return f"✅ 记忆已安全写入（加锁保护）：[{key}] -> '{value}'"
+    except json.JSONDecodeError:
+        return "❌ 记忆文件损坏：JSONDecodeError"
+    except TimeoutError:
+        return "❌ 文件锁超时：其他进程正在写入记忆"
     except Exception as e:
-        return f"记忆写入失败: {str(e)}"
+        return f"记忆写入失败：{type(e).__name__} - {str(e)}"
 
 # 工具 2：事件流水账 (追加型) - 可选新增
 @tool
@@ -523,8 +565,12 @@ def append_transaction_log(action: str, target: str, details: str) -> str:
         with open(log_path, 'a', encoding='utf-8') as f:
             f.write(log_entry + "\n")
         return "✅ 交易流水已追加记录。"
+    except json.JSONDecodeError:
+        return "❌ 日志序列化失败：JSONDecodeError"
+    except FileNotFoundError:
+        return "❌ 日志目录不存在"
     except Exception as e:
-        return f"记录流水失败: {str(e)}"
+        return f"记录流水失败：{type(e).__name__} - {str(e)}"
 
 tools = [get_universal_stock_price,
          draw_universal_stock_chart,
