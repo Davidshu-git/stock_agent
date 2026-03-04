@@ -380,6 +380,10 @@ def analyze_local_document(file_name: str, query: str) -> str:
                     with open(meta_file, 'r', encoding='utf-8') as f:
                         meta = json.load(f)
                     
+                    # 类型检查：确保 meta 是字典
+                    if not isinstance(meta, dict):
+                        raise TypeError("缓存元数据格式错误：期望 dict 类型")
+                    
                     # 校验硬盘缓存的时间戳是否与文件当前时间一致
                     if meta.get("mtime") == current_mtime:
                         console.print(f"[bold cyan]💾 L2 命中 (硬盘):[/bold cyan] [cyan dim]加载 {file_name} 的持久化索引并写回内存[/cyan dim]")
@@ -392,8 +396,12 @@ def analyze_local_document(file_name: str, query: str) -> str:
                         # 反向预热 L1 内存池
                         FAISS_CACHE[target_path_str] = {"mtime": current_mtime, "vectorstore": vectorstore}
                         loaded_from_disk = True
+                except json.JSONDecodeError:
+                    console.print(f"[bold red]缓存元数据损坏 (JSONDecodeError)，准备降级重建[/bold red]")
+                except TypeError as e:
+                    console.print(f"[bold red]缓存元数据格式错误 (TypeError): {str(e)}，准备降级重建[/bold red]")
                 except Exception as e:
-                    console.print(f"[bold red]读取硬盘缓存失败，准备降级重建: {str(e)}[/bold red]")
+                    console.print(f"[bold red]读取硬盘缓存失败 ({type(e).__name__})，准备降级重建：{str(e)}[/bold red]")
             
             # ==========================================
             # 🔄 均未命中 (或文件被修改)：触发 L3 重建并穿透写入
