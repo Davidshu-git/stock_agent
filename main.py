@@ -241,16 +241,28 @@ def search_company_ticker(company_name: str) -> str:
     输入公司或产品名称（如 'aws', '淘宝', '马斯克的公司'），它会联网搜索并返回相关信息以供你提取股票代码。
     """
     try:
+        from requests.exceptions import Timeout, ConnectionError, HTTPError
+        
         # 自动构造搜索词，抓取前 3 条网页摘要
         query = f"{company_name} 股票代码 ticker symbol"
-        results = DDGS().text(query, max_results=3)
+        
+        # 创建 DDGS 实例并设置超时
+        ddgs = DDGS(timeout=10)
+        results = ddgs.text(query, max_results=3)
+        
         if not results:
             return f"未搜索到 {company_name} 的相关股票代码。"
         
-        # 将搜索到的网页摘要直接扔给大模型，它的“大脑”会自动从里面提取出正确的字母代码
+        # 将搜索到的网页摘要直接扔给大模型，它的"大脑"会自动从里面提取出正确的字母代码
         return str(results)
+    except Timeout:
+        return f"联网搜索超时：搜索 '{company_name}' 时超过 10 秒无响应，请稍后重试。"
+    except ConnectionError:
+        return f"网络连接失败：无法连接到搜索服务，请检查网络状态。"
+    except HTTPError as e:
+        return f"搜索服务返回错误：HTTP {e.response.status_code if hasattr(e, 'response') else 'ERROR'}。"
     except Exception as e:
-        return f"联网搜索出错: {str(e)}"
+        return f"联网搜索出错：{type(e).__name__} - {str(e)}"
 
 # ==========================================
 # 插件 3：读取本地文件
