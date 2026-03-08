@@ -6,6 +6,7 @@ import mplfinance as mpf
 from datetime import datetime, timedelta
 from filelock import FileLock
 import yfinance as yf
+import akshare as ak
 from langchain_core.tools import tool
 # 使用openai 兼容千问
 from langchain_openai import ChatOpenAI
@@ -200,7 +201,121 @@ def get_universal_stock_price(ticker: str, date: str = None) -> str:
     except Exception as e:
         return f"查询出错，已停止重试：{type(e).__name__} - {str(e)}"
     
-    
+
+# ==========================================
+# 插件 1.2：A 股 ETF 基金专用查询工具
+# ==========================================
+@tool
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def get_etf_price(etf_code: str, date: str = None) -> str:
+    """
+    🇨🇳 A 股 ETF 基金专用查价引擎（支持 akshare 和 yfinance 双数据源）。
+    当用户查询 ETF 基金（如 513050、159915、510300 等）时优先使用此工具。
+    - 参数 etf_code: 6 位 ETF 代码（如 '513050'）
+    - 参数 date (可选): 'YYYY-MM-DD'。未提供则返回最近交易日数据。
+    """
+    try:
+        import pandas as pd
+        
+        # 确保代码是 6 位数字
+        etf_code = etf_code.strip()
+        if not etf_code.isdigit() or len(etf_code) != 6:
+            return "❌ ETF 代码格式不正确，请输入 6 位数字代码（如 513050）"
+        
+        # 判断市场：沪市 (50,51,58 开头) 用.SS，深市 (15,16 开头) 用.SZ
+        if etf_code.startswith(('50', '51', '58')):
+            suffix = '.SS'
+        elif etf_code.startswith(('15', '16')):
+            suffix = '.SZ'
+        else:
+            suffix = ''  # 未知市场，让 yfinance 自己判断
+        
+        formatted_code = etf_code + suffix if suffix else etf_code
+        
+        # 优先尝试 yfinance（更稳定）
+        try:
+            stock = yf.Ticker(formatted_code)
+            
+            if date:
+                target_date = datetime.strptime(date, "%Y-%m-%d")
+                next_date = target_date + timedelta(days=1)
+                hist = stock.history(start=target_date.strftime("%Y-%m-%d"), end=next_date.strftime("%Y-%m-%d"))
+                date_label = date
+            else:
+                hist = stock.history(period="1d")
+                date_label = "最近交易日"
+            
+            if not hist.empty:
+                open_val = hist['Open'].iloc[0]
+                close_val = hist['Close'].iloc[0]
+                
+                if pd.isna(open_val) or pd.isna(close_val):
+                    raise ValueError("数据不完整")
+                
+                open_p = round(float(open_val), 3)
+                close_p = round(float(close_val), 3)
+                high_p = round(float(hist['High'].iloc[0]), 3)
+                low_p = round(float(hist['Low'].iloc[0]), 3)
+                volume = int(hist['Volume'].iloc[0])
+                actual_date = hist.index[0].strftime("%Y-%m-%d")
+                
+                return f"✅ ETF {etf_code} ({actual_date}) - 开盘：{open_p}, 收盘：{close_p}, 最高：{high_p}, 最低：{low_p}, 成交量：{volume}"
+        except Exception as yf_error:
+            # yfinance 失败时，尝试 akshare
+            console.print(f"[yellow dim]yfinance 查询失败，切换到 akshare: {yf_error}[/yellow dim]")
+            
+            if date:
+                df = ak.fund_etf_hist_em(
+                    symbol=etf_code, 
+                    period="daily", 
+                    start_date=date.replace('-', ''), 
+                    end_date=date.replace('-', ''), 
+                    adjust=""
+                )
+                if df is None or df.empty:
+                    return f"❌ 未找到 ETF {etf_code} 在 {date} 的数据，可能该日非交易日。"
+                
+                open_val = df['开盘'].iloc[0]
+                close_val = df['收盘'].iloc[0]
+                
+                if pd.isna(open_val) or pd.isna(close_val):
+                    return f"❌ ETF {etf_code} 在 {date} 的数据不完整。"
+                
+                open_p = round(float(open_val), 3)
+                close_p = round(float(close_val), 3)
+                high_p = round(float(df['最高'].iloc[0]), 3)
+                low_p = round(float(df['最低'].iloc[0]), 3)
+                volume = int(df['成交量'].iloc[0])
+                
+                return f"✅ ETF {etf_code} ({date}) - 开盘：{open_p}, 收盘：{close_p}, 最高：{high_p}, 最低：{low_p}, 成交量：{volume}"
+            else:
+                all_etfs = ak.fund_etf_spot_em()
+                df = all_etfs[all_etfs['代码'] == etf_code]
+                
+                if df is None or df.empty:
+                    return f"❌ 未找到 ETF {etf_code} 的实时行情数据，可能代码不存在或市场未开盘。"
+                
+                current_price = round(float(df['最新价'].iloc[0]), 3)
+                open_p = round(float(df['今开'].iloc[0]), 3)
+                high_p = round(float(df['最高'].iloc[0]), 3)
+                low_p = round(float(df['最低'].iloc[0]), 3)
+                prev_close = round(float(df['昨收'].iloc[0]), 3)
+                change_percent = round(float(df['涨跌幅'].iloc[0]), 2)
+                volume = int(df['成交量'].iloc[0])
+                amount = round(float(df['成交额'].iloc[0]) / 10000, 2)
+                
+                return (
+                    f"✅ ETF {etf_code} 实时行情 - 最新价：{current_price} ({change_percent}%)\n"
+                    f"开盘：{open_p}, 最高：{high_p}, 最低：{low_p}, 昨收：{prev_close}\n"
+                    f"成交量：{volume}手，成交额：{amount}万元"
+                )
+        
+    except Exception as e:
+        return f"ETF 查询出错，已停止重试：{type(e).__name__} - {str(e)}。提示：A 股 ETF 数据可能因数据源限制暂时无法获取，请稍后重试。"
+
+
+# ==========================================
+# 插件 1.5：K 线图与 30 天走势可视化
 # ==========================================
 # 插件 1.5：K线图与 30 天走势可视化
 # ==========================================
@@ -573,6 +688,7 @@ def append_transaction_log(action: str, target: str, details: str) -> str:
         return f"记录流水失败：{type(e).__name__} - {str(e)}"
 
 tools = [get_universal_stock_price,
+         get_etf_price,
          draw_universal_stock_chart,
          search_company_ticker,
          read_local_file, write_local_file,
@@ -634,9 +750,10 @@ prompt = ChatPromptTemplate.from_messages([
      🧠 【用户的长期记忆库】(以下是关于用户的客观事实，请在分析时主动结合使用){user_profile}。
      ==============================
     🔍 核心能力：
-    遇到股票查价，直接调用 `get_universal_stock_price`；
-    遇到画图需求，直接调用 `draw_universal_stock_chart`。
-    工具会在底层自动识别美股/A股/港股，你无需操心市场后缀，直接传入用户给的代码即可。
+    - 遇到 ETF 基金查价（如 513050、159915 等 6 位数字代码），优先调用 `get_etf_price`；
+    - 遇到股票查价，调用 `get_universal_stock_price`；
+    - 遇到画图需求，调用 `draw_universal_stock_chart`。
+    工具会在底层自动识别美股/A 股/港股，你无需操心市场后缀，直接传入用户给的代码即可。
     ==============================
     🚨 【记忆存储路由法则】（最高优先级判断逻辑）
     当你接收到用户的新信息时，你必须在脑海中进行分类，并严格调用对应的工具：
