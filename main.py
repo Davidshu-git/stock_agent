@@ -10,6 +10,9 @@ from valuation_engine import (
     fetch_stock_price_raw,
     fetch_etf_price_raw,
     generate_kline_chart,
+    calculate_portfolio_valuation,
+    parse_user_profile_to_positions,
+    format_portfolio_report,
 )
 # 使用openai 兼容千问
 from langchain_openai import ChatOpenAI
@@ -529,7 +532,7 @@ def append_transaction_log(action: str, target: str, details: str) -> str:
             "timestamp": time.time(),
             "action": action,     # 例如："买入"
             "target": target,     # 例如："苹果股票"
-            "details": details    # 例如："100股，成本150"
+            "details": details    # 例如："100 股，成本 150"
         }, ensure_ascii=False)
         
         with open(log_path, 'a', encoding='utf-8') as f:
@@ -542,6 +545,50 @@ def append_transaction_log(action: str, target: str, details: str) -> str:
     except Exception as e:
         return f"记录流水失败：{type(e).__name__} - {str(e)}"
 
+
+# ==========================================
+# 插件 8：个人持仓市值精确计算器
+# ==========================================
+@tool
+def calculate_exact_portfolio_value() -> str:
+    """
+    💰【个人持仓市值精确计算器】（财务计算专属红线）：
+    当用户询问自己的总资产、总市值、具体盈亏金额，或者要求盘点当前账户资金情况时，**必须且只能**调用此工具！
+    **严禁自行心算或数学推演！**
+    
+    此工具会：
+    1. 读取 ./memory/user_profile.json 中的持仓数据
+    2. 调用底层估值引擎获取实时股价
+    3. 精确计算总市值、总成本、今日盈亏
+    
+    Returns:
+        str: 格式化的 Markdown 报告，包含总资产概览和各持仓明细表格
+    """
+    try:
+        if not USER_PROFILE_PATH.exists():
+            return "❌ 未找到持仓记忆文件，请先告知我您的持仓情况。"
+        
+        with open(USER_PROFILE_PATH, 'r', encoding='utf-8') as f:
+            user_data = json.load(f)
+        
+        if not user_data:
+            return "❌ 持仓记忆为空，请先告知我您的持仓情况。"
+        
+        positions = parse_user_profile_to_positions(user_data)
+        
+        if not positions:
+            return "❌ 未解析到有效持仓数据，请检查持仓记忆格式。"
+        
+        valuation = calculate_portfolio_valuation(positions)
+        markdown_report = format_portfolio_report(valuation)
+        
+        return markdown_report
+        
+    except json.JSONDecodeError:
+        return "❌ 持仓记忆文件损坏：JSONDecodeError"
+    except Exception as e:
+        return f"❌ 计算失败：{type(e).__name__} - {str(e)}"
+
 tools = [get_universal_stock_price,
          get_etf_price,
          draw_universal_stock_chart,
@@ -550,7 +597,8 @@ tools = [get_universal_stock_price,
          list_kb_files,
          analyze_local_document,
          update_user_memory,
-         append_transaction_log]
+         append_transaction_log,
+         calculate_exact_portfolio_value]
 
 # ==========================================
 # 🧠 配置长效记忆引擎 (Long-Term Memory)
@@ -601,7 +649,7 @@ llm = ChatOpenAI(
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", """你是一个极客风格的全栈量化分析师与系统助手。
-     🕒 【系统物理时钟】：当前的真实现实时间是 {current_time}。你需要以此为绝对基准来理解用户的相对时间描述（如“今天”、“上周”、“昨天”），并判断当前所处的交易周期。
+     🕒 【系统物理时钟】：当前的真实现实时间是 {current_time}。你需要以此为绝对基准来理解用户的相对时间描述（如"今天"、"上周"、"昨天"），并判断当前所处的交易周期。
      🧠 【用户的长期记忆库】(以下是关于用户的客观事实，请在分析时主动结合使用){user_profile}。
      ==============================
     🔍 核心能力：
@@ -610,18 +658,23 @@ prompt = ChatPromptTemplate.from_messages([
     - 遇到画图需求，调用 `draw_universal_stock_chart`。
     工具会在底层自动识别美股/A 股/港股，你无需操心市场后缀，直接传入用户给的代码即可。
     ==============================
+    🚨【财务计算红线】（最高优先级）：
+    当用户询问自己的总资产、总市值、具体盈亏金额，或者要求盘点当前账户资金情况时，
+    **绝对禁止自行数学推演或心算！**
+    **必须且只能调用 `calculate_exact_portfolio_value` 工具获取精确数据！**
+    ==============================
     🚨 【记忆存储路由法则】（最高优先级判断逻辑）
     当你接收到用户的新信息时，你必须在脑海中进行分类，并严格调用对应的工具：
 
     1. 🎯 【状态与偏好】 -> 调用 `update_user_memory`
     - 触发条件：用户告知了当前持仓的总快照、个人投资偏好、习惯要求、人设设定。
-    - 判断标准：这个信息是“排他”的，新的状态会使旧的状态失效。
-    - 例子：“我现在手里有200股特斯拉”、“以后别给我生成图表了”。
+    - 判断标准：这个信息是"排他"的，新的状态会使旧的状态失效。
+    - 例子："我现在手里有 200 股特斯拉"、"以后别给我生成图表了"。
 
     2. 📜 【交易与事件】 -> 调用 `append_transaction_log`
     - 触发条件：用户告知了一笔具体的动作或历史发生过的事件。
     - 判断标准：它是流水账，不能覆盖。
-    - 例子：“我今天早上卖了50股苹果”、“我昨天把特斯拉清仓了”。
+    - 例子："我今天早上卖了 50 股苹果"、"我昨天把特斯拉清仓了"。
 
     3. 📚 【深度知识】 -> 调用 `write_local_file`
     - 触发条件：你为用户生成了深度的长篇分析、总结了某个行业的长文。
@@ -635,12 +688,12 @@ prompt = ChatPromptTemplate.from_messages([
     1. 🔍 核心能力：遇到不知道的公司用 search_company_ticker，查本地资料用 analyze_local_document。
     2. ✍️ 智能输出调度（最高法则）：
        - ⚡ 轻量级问答：如果用户只是单纯询问价格或简单问题，请直接在终端简明扼要地回答，绝对不要调用 write_local_file。
-       - 📝 深度报告生成：当用户要求“生成报告”、“保存到本地”、“写研报”时，你必须整合分析。
+       - 📝 深度报告生成：当用户要求"生成报告"、"保存到本地"、"写研报"时，你必须整合分析。
        
     🚨【绝对红线指令 - 报告怎么写】：
     如果你判断当前任务需要生成报告，你**严禁**在最终的终端回复（Final Answer）中直接输出报告的 Markdown 文本！
     你**必须且只能**将写好的整篇 Markdown 内容作为 `content` 参数，调用 `write_local_file` 工具保存！
-    终端最终只需冷酷地汇报一句：“✅ 任务执行完毕。深度分析报告已生成，本地路径为：xxx”。
+    终端最终只需冷酷地汇报一句："✅ 任务执行完毕。深度分析报告已生成，本地路径为：xxx"。
     
     3. 🖼️ 图文并茂：生成报告时，请务必先调用 draw_universal_stock_chart 生成走势图，并在传给 write_local_file 的 Markdown 内容中，使用 `![图表](./xxx.png)` 将图片嵌入。
     4. 🧠 记忆系统：结合用户历史告知你的持仓情况或偏好进行解读。"""),

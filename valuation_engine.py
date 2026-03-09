@@ -377,3 +377,100 @@ def calculate_portfolio_valuation(positions: Dict[str, Dict[str, Any]]) -> Dict[
         "holdings": holdings_result,
         "calculation_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
+
+
+def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """
+    将用户持仓记忆文件（user_profile.json）中的自然语言持仓描述解析为标准 positions 格式。
+    
+    Args:
+        user_data: 用户记忆字典，如：
+            {
+                "AAPL": "100 股，成本 200 美元/股",
+                "风险偏好": "激进型",
+                "513180": "10000 股，成本 0.677 元/股"
+            }
+    
+    Returns:
+        Dict[str, Dict[str, Any]]: 标准 positions 格式，如：
+            {
+                "AAPL": {"shares": 100, "cost_basis": 200.0, "type": "stock"},
+                "513180": {"shares": 10000, "cost_basis": 0.677, "type": "etf"}
+            }
+    """
+    import re
+    
+    positions = {}
+    skip_keys = {"风险偏好", "投资目标", "备注", "持仓策略"}
+    
+    for key, value in user_data.items():
+        if key in skip_keys:
+            continue
+        
+        try:
+            ticker = key
+            holding_str = str(value)
+            
+            shares_match = re.search(r'(\d+)\s*股', holding_str)
+            cost_match = re.search(r'成本\s*([\d.]+)', holding_str)
+            
+            if not shares_match or not cost_match:
+                continue
+            
+            shares = int(shares_match.group(1))
+            cost_basis = float(cost_match.group(1))
+            
+            is_etf = key.isdigit() and len(key) == 6
+            
+            positions[ticker] = {
+                "shares": shares,
+                "cost_basis": cost_basis,
+                "type": "etf" if is_etf else "stock"
+            }
+        except Exception:
+            continue
+    
+    return positions
+
+
+def format_portfolio_report(valuation: Dict[str, Any]) -> str:
+    """
+    将 calculate_portfolio_valuation 返回的估值字典格式化为 Markdown 报告。
+    
+    Args:
+        valuation: calculate_portfolio_valuation 返回的估值字典
+    
+    Returns:
+        str: 格式化的 Markdown 报告字符串
+    """
+    markdown_lines = [
+        "## 💰 持仓市值与盈亏对账单",
+        "",
+        f"**计算时间**: {valuation['calculation_time']}",
+        "",
+        "### 📊 总资产概览",
+        "",
+        f"- **总市值**: ¥{valuation['total_market_value']:,.2f}",
+        f"- **总成本**: ¥{valuation['total_cost']:,.2f}",
+        f"- **累计盈亏**: ¥{valuation['total_profit_loss']:,.2f} ({valuation['profit_loss_percent']:+.2f}%)",
+        "",
+        "### 📈 持仓明细",
+        "",
+        "| 代码 | 持股数 | 成本价 | 现价 | 市值 | 总成本 | 盈亏金额 | 盈亏率 |",
+        "|------|--------|--------|------|------|--------|---------|--------|",
+    ]
+    
+    for holding in valuation['holdings']:
+        if 'error' in holding:
+            markdown_lines.append(
+                f"| {holding['ticker']} | {holding['shares']} | - | - | - | ❌ {holding['error']} | - |"
+            )
+        else:
+            markdown_lines.append(
+                f"| {holding['ticker']} | {holding['shares']} | {holding['cost_basis']} | "
+                f"{holding['current_price']} | {holding['market_value']:,.2f} | "
+                f"{holding['cost_value']:,.2f} | {holding['profit_loss']:+,.2f} | "
+                f"{holding['profit_loss_percent']:+.2f}% |"
+            )
+    
+    return "\n".join(markdown_lines)

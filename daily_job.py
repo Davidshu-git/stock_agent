@@ -26,7 +26,12 @@ from dotenv import load_dotenv
 from rich.console import Console
 
 from notifier import send_market_report_email
-from valuation_engine import fetch_stock_price_raw
+from valuation_engine import (
+    fetch_stock_price_raw,
+    parse_user_profile_to_positions,
+    calculate_portfolio_valuation,
+    format_portfolio_report,
+)
 
 
 console: Console = Console()
@@ -75,31 +80,30 @@ def fetch_global_indices() -> str:
     return f"【今日核心指数】{', '.join(results)}"
 
 
-def load_user_profile() -> str:
+def load_user_profile() -> Dict[str, Any]:
     """
     读取用户持仓与偏好记忆文件。
 
     Returns:
-        str: 用户记忆内容，如果文件不存在或解析失败则返回降级提示。
+        Dict[str, Any]: 用户记忆字典，如果文件不存在或解析失败则返回空字典。
     """
     profile_path: Path = Path("./memory/user_profile.json").resolve()
 
     if not profile_path.exists():
-        return "暂无历史持仓与偏好记录"
+        return {}
 
     try:
         with open(profile_path, "r", encoding="utf-8") as f:
             data: dict = json.load(f)
 
         if not data:
-            return "暂无历史持仓与偏好记录"
+            return {}
 
-        memory_str: str = "\n".join([f"- 【{k}】: {v}" for k, v in data.items()])
-        return memory_str
+        return data
     except json.JSONDecodeError:
-        return "暂无历史持仓与偏好记录"
+        return {}
     except Exception:
-        return "暂无历史持仓与偏好记录"
+        return {}
 
 
 def fetch_global_market_news() -> str:
@@ -129,7 +133,7 @@ def fetch_global_market_news() -> str:
         "东财全球快讯": {"time": "发布时间", "content": "摘要"},
     }
 
-    dfs: List[pd.DataFrame] = []
+    dfs = []
 
     for source in data_sources:
         source_name: str = source["name"]
@@ -146,7 +150,7 @@ def fetch_global_market_news() -> str:
                 content_col: str = mapping.get("content", "")
 
                 if time_col in df.columns and content_col in df.columns:
-                    selected_df: pd.DataFrame = df[[time_col, content_col]].copy()
+                    selected_df = df[[time_col, content_col]].copy()
                     selected_df.columns = ["time", "content"]
                     dfs.append(selected_df)
                     console.print(f"[dim]   └─ 列名映射：{time_col} → time, {content_col} → content[/dim]")
@@ -189,7 +193,7 @@ def fetch_global_market_news() -> str:
     return "\n".join(news_items)
 
 
-def generate_market_report(news_text: str, user_memory: str, indices_data: str) -> str:
+def generate_market_report(news_text: str, user_memory: str, indices_data: str, portfolio_metrics: Dict[str, Any]) -> str:
     """
     调用大模型生成盘后市场报告。
 
@@ -197,6 +201,7 @@ def generate_market_report(news_text: str, user_memory: str, indices_data: str) 
         news_text: 多源聚合后的全球市场资讯文本。
         user_memory: 用户持仓与偏好记忆字符串。
         indices_data: 全球核心指数当日涨跌幅数据。
+        portfolio_metrics: 用户持仓的精准财务数据（总市值、今日盈亏等）。
 
     Returns:
         str: 生成的 Markdown 格式报告。
@@ -207,7 +212,7 @@ def generate_market_report(news_text: str, user_memory: str, indices_data: str) 
         raise ValueError("DASHSCOPE_API_KEY 未配置")
 
     system_prompt: str = """
-你是一位顶级的全球宏观策略分析师、私人财富管家与极其严苛的风控专家。请根据传入的【200 条全球市场宏观资讯】、【今日核心指数涨跌幅数据】和用户的【个人持仓记忆】，生成一份具备极高专业度的盘后研报。
+你是一位顶级的全球宏观策略分析师、私人财富管家与极其严苛的风控专家。请根据传入的【200 条全球市场宏观资讯】、【今日核心指数涨跌幅数据】、【用户精准财务数据】和用户的【个人持仓记忆】，生成一份具备极高专业度的盘后研报。
 
 你的回复必须严格采用 Markdown 格式，并强制包含以下三大核心模块：
 
@@ -216,8 +221,21 @@ def generate_market_report(news_text: str, user_memory: str, indices_data: str) 
 - **请结合提供的【今日核心指数涨跌幅数据】，对三大市场的盘面情绪进行定量与定性结合的精准复盘。**
 - 缺失特定市场重大新闻时可一笔带过，切忌废话。
 
-### 2. 🎯 专属持仓洞察
-- 将三大市场的热点与用户的跨市场持仓记忆进行深度碰撞，给出具体的调仓、减仓或持有建议。
+### 2. 💰 专属市值与盈亏归因分析（核心模块）
+**强制约束 - 你必须严格执行以下三项分析任务：**
+
+1. **数值播报（强制要求）**：必须在本模块段落开头，使用醒目格式（如加粗或引用块）标出系统传入的【精准总市值】和【今日绝对盈亏】数值。
+
+2. **盈亏归因分析（核心深度分析）**：
+   - 你必须结合今日的【全球市场资讯】和【核心指数涨跌】，深度剖析导致今日账户涨跌的根本原因。
+   - **归因模板强制示例**："今日您的账户浮亏 ¥X，主要是因为您重仓的某某赛道（如：半导体/新能源/消费电子）受今日某条特定新闻影响拖累……"
+   - 你必须逐条追踪用户重仓板块/个股，将其与今日资讯进行因果关联，解释清楚"为什么涨"或"为什么跌"。
+   - 如果账户上涨，需说明是哪个赛道或个股贡献了主要收益；如果下跌，需指出是哪个持仓拖累了整体表现。
+
+3. **资产健康度体检与调仓建议**：
+   - 根据今日宏观情绪和资讯风向，评估用户当前的持仓权重分布是否合理。
+   - 如果检测到某单一板块风险暴露过高（例如：仓位过度集中于今日大跌的行业），必须给出明确的调仓优化建议（如："建议您考虑将 XX 板块仓位从 X% 降至 X%，以分散单一赛道风险"）。
+   - 如果持仓结构健康，也需明确输出"✅ 您的持仓权重分布合理，风险分散度良好"。
 
 ### 3. ⚠️ 专属风控与黑天鹅预警 (核心重点)
 - 强制扮演极度悲观的风控官，从资讯中嗅探可能引发市场剧烈波动的潜在风险。
@@ -225,6 +243,10 @@ def generate_market_report(news_text: str, user_memory: str, indices_data: str) 
 - **动态赛道雷达（核心机制）**：必须先深度剖析用户的【个人持仓记忆】，推导出用户当前持仓标的所属的**核心行业与产业链**。然后，在海量资讯中，精准锁定并提取针对这些"特定持仓赛道"的负面异动、政策监管打压或供应链断裂等风险。
 - **高亮要求**：一旦发现上述风险，必须使用醒目的加粗和警示符号（如 ❗ 或 🚨）进行高亮。如果当日未监测到明显风险，也必须明确输出"✅ 我们的专属风控雷达今日未发现针对您持仓赛道的重大异动与宏观风险"。
 """
+
+    total_market_value: float = portfolio_metrics.get("total_market_value", 0.0)
+    total_pnl: float = portfolio_metrics.get("total_pnl", 0.0)
+    total_pnl_percent: float = portfolio_metrics.get("total_pnl_percent", 0.0)
 
     user_prompt: str = f"""
 【今日核心指数涨跌幅数据】
@@ -235,6 +257,9 @@ def generate_market_report(news_text: str, user_memory: str, indices_data: str) 
 
 【个人持仓与偏好记忆】
 {user_memory}
+
+【精准财务数据 - 持仓明细对账单】
+{portfolio_metrics.get("markdown_report", "暂无明细数据")}
 
 请生成今日全球盘后报告：
 """
@@ -271,14 +296,30 @@ def job_routine() -> None:
         console.print(f"[bold red]❌ [调度任务] {str(e)}[/bold red]")
         return
 
-    user_memory: str = load_user_profile()
+    user_memory_dict: Dict[str, Any] = load_user_profile()
+    user_memory: str = "\n".join([f"- 【{k}】: {v}" for k, v in user_memory_dict.items()]) if user_memory_dict else "暂无历史持仓与偏好记录"
     console.print(f"[bold dim]🧠 [记忆读取] 用户记忆加载完成[/bold dim]")
+
+    positions = parse_user_profile_to_positions(user_memory_dict)
+    valuation = {}
+    markdown_report = "暂无持仓数据"
+    if positions:
+        valuation = calculate_portfolio_valuation(positions)
+        markdown_report = format_portfolio_report(valuation)
+        console.print(f"[bold dim]💰 [财务计算] 总市值：¥{valuation['total_market_value']:,.2f}, 累计盈亏：¥{valuation['total_profit_loss']:,.2f} ({valuation['profit_loss_percent']:+.2f}%)[/bold dim]")
+
+    portfolio_metrics = {
+        "total_market_value": valuation.get("total_market_value", 0.0),
+        "total_pnl": valuation.get("total_profit_loss", 0.0),
+        "total_pnl_percent": valuation.get("profit_loss_percent", 0.0),
+        "markdown_report": markdown_report,
+    }
 
     indices_data: str = fetch_global_indices()
     console.print(f"[bold dim]📊 [指数数据] {indices_data}[/bold dim]")
 
     try:
-        report_content: str = generate_market_report(news_text, user_memory, indices_data)
+        report_content: str = generate_market_report(news_text, user_memory, indices_data, portfolio_metrics)
     except ValueError as e:
         console.print(f"[bold red]❌ [报告生成] {str(e)}[/bold red]")
         return
