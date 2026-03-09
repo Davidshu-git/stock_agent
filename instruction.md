@@ -14,6 +14,8 @@ OmniStock Agent 是一个基于 LangChain 框架构建的**本地化全栈量化
 | 文件读写 | `read_local_file` / `write_local_file` | 沙箱内的安全文件操作 |
 | 文档分析 | `analyze_local_document` | RAG 检索本地知识库 |
 | 记忆管理 | `update_user_memory` / `append_transaction_log` | 长期记忆与交易日志 |
+| 市值核算 | `calculate_exact_portfolio_value` | 多币种持仓精确总市值与盈亏核算（自动折算 CNY） |
+| 主动触发 | `trigger_daily_report` | 终端主动唤醒盘后调度链路，毫秒级研报下发 |
 
 ## 架构亮点
 
@@ -37,6 +39,12 @@ OmniStock Agent 是一个基于 LangChain 框架构建的**本地化全栈量化
 ### 5. 沙箱安全防御
 使用 `pathlib.is_relative_to()` 严格校验路径层级，彻底阻断 `../` 目录穿越攻击。
 
+### 6. 纯 Python 多币种估值引擎
+`valuation_engine.py` 独立模块接管所有跨市场查价与汇率折算，由 CPU ALU 提供 100% 精确的单票盈亏计算，彻底斩断 LLM 财务计算幻觉。
+
+### 7. 主被动融合双重调度
+支持每日 15:30 被动静默推送 + 终端 `trigger_daily_report` 主动唤醒，同一业务逻辑满足定时与即时双场景需求。
+
 ## 目录结构
 
 ```
@@ -46,6 +54,7 @@ stock_agent/
 ├── embeddings/         # FAISS 向量库缓存
 ├── memory/             # 长期记忆存储
 ├── main.py             # 核心入口
+├── valuation_engine.py # 财务核心：多币种转换、精确盈亏计算
 ├── requirements.txt    # 依赖清单
 └── .env                # 环境变量配置
 ```
