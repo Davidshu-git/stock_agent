@@ -20,6 +20,7 @@ from typing import List, Dict, Any
 import schedule
 import akshare as ak
 import pandas as pd
+import yfinance as yf
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 from dotenv import load_dotenv
@@ -32,6 +33,51 @@ console: Console = Console()
 
 
 load_dotenv()
+
+
+def fetch_global_indices() -> str:
+    """
+    抓取全球核心指数当日涨跌幅数据。
+
+    使用 yfinance 获取三大核心指数（沪深 300、恒生指数、纳斯达克 100）的当日行情，
+    计算涨跌幅百分比，并提供降级容错机制。
+
+    Returns:
+        str: 格式化后的指数涨跌幅文本，格式如：
+             "【今日核心指数】沪深 300: +1.25%, 恒生指数：-0.50%, 纳斯达克 100: +0.88%"
+    """
+    indices_config: Dict[str, Dict[str, str]] = {
+        "沪深 300": {"ticker": "000300.SS", "name": "沪深 300"},
+        "恒生指数": {"ticker": "^HSI", "name": "恒生指数"},
+        "纳斯达克 100": {"ticker": "^NDX", "name": "纳斯达克 100"},
+    }
+
+    results: List[str] = []
+
+    for market, config in indices_config.items():
+        ticker: str = config["ticker"]
+        name: str = config["name"]
+
+        try:
+            ticker_obj = yf.Ticker(ticker)
+            hist_data = ticker_obj.history(period="1d")
+
+            if hist_data is not None and isinstance(hist_data, pd.DataFrame) and not hist_data.empty and "Close" in hist_data.columns:
+                close_price: float = float(hist_data["Close"].iloc[-1])
+                open_price: float = float(hist_data["Open"].iloc[-1]) if "Open" in hist_data.columns else close_price
+
+                if open_price != 0:
+                    change_pct: float = ((close_price - open_price) / open_price) * 100
+                    sign: str = "+" if change_pct >= 0 else ""
+                    results.append(f"{name}: {sign}{change_pct:.2f}%")
+                else:
+                    results.append(f"{name}: 获取失败")
+            else:
+                results.append(f"{name}: 获取失败")
+        except Exception:
+            results.append(f"{name}: 获取失败")
+
+    return f"【今日核心指数】{', '.join(results)}"
 
 
 def load_user_profile() -> str:
@@ -148,13 +194,14 @@ def fetch_global_market_news() -> str:
     return "\n".join(news_items)
 
 
-def generate_market_report(news_text: str, user_memory: str) -> str:
+def generate_market_report(news_text: str, user_memory: str, indices_data: str) -> str:
     """
     调用大模型生成盘后市场报告。
 
     Args:
         news_text: 多源聚合后的全球市场资讯文本。
         user_memory: 用户持仓与偏好记忆字符串。
+        indices_data: 全球核心指数当日涨跌幅数据。
 
     Returns:
         str: 生成的 Markdown 格式报告。
@@ -165,12 +212,13 @@ def generate_market_report(news_text: str, user_memory: str) -> str:
         raise ValueError("DASHSCOPE_API_KEY 未配置")
 
     system_prompt: str = """
-你是一位顶级的全球宏观策略分析师、私人财富管家与极其严苛的风控专家。请根据传入的【200 条全球市场宏观资讯】和用户的【个人持仓记忆】，生成一份具备极高专业度的盘后研报。
+你是一位顶级的全球宏观策略分析师、私人财富管家与极其严苛的风控专家。请根据传入的【200 条全球市场宏观资讯】、【今日核心指数涨跌幅数据】和用户的【个人持仓记忆】，生成一份具备极高专业度的盘后研报。
 
 你的回复必须严格采用 Markdown 格式，并强制包含以下三大核心模块：
 
 ### 1. 🌍 全球宏观与三大市场复盘
 - 从海量资讯中，分别提炼出 A 股、港股、美股 的绝对核心事件与盘面主线逻辑。
+- **请结合提供的【今日核心指数涨跌幅数据】，对三大市场的盘面情绪进行定量与定性结合的精准复盘。**
 - 缺失特定市场重大新闻时可一笔带过，切忌废话。
 
 ### 2. 🎯 专属持仓洞察
@@ -184,6 +232,9 @@ def generate_market_report(news_text: str, user_memory: str) -> str:
 """
 
     user_prompt: str = f"""
+【今日核心指数涨跌幅数据】
+{indices_data}
+
 【全球市场资讯】
 {news_text}
 
@@ -228,8 +279,11 @@ def job_routine() -> None:
     user_memory: str = load_user_profile()
     console.print(f"[bold dim]🧠 [记忆读取] 用户记忆加载完成[/bold dim]")
 
+    indices_data: str = fetch_global_indices()
+    console.print(f"[bold dim]📊 [指数数据] {indices_data}[/bold dim]")
+
     try:
-        report_content: str = generate_market_report(news_text, user_memory)
+        report_content: str = generate_market_report(news_text, user_memory, indices_data)
     except ValueError as e:
         console.print(f"[bold red]❌ [报告生成] {str(e)}[/bold red]")
         return

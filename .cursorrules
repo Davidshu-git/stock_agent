@@ -31,3 +31,10 @@
   2. 更改/新增了什么关键逻辑。
   3. 下一步的建议或潜在风险提醒。
 - 确保用户对当前系统的代码状态拥有 100% 的掌控感。
+
+### 3. 🐍 环境与依赖强制约束 (Environment Guardrails)
+- **虚拟环境优先**：在执行任何 Python 脚本（如 `python main.py` 或 `python daily_job.py`）或安装依赖前，**必须**确保在当前 Shell 环境下已激活项目根目录下的虚拟环境（通常是 `.venv`）。
+- **禁止全局污染**：严禁直接使用系统全局 Python 执行指令。如果 OpenCode 准备在终端执行命令，必须优先采用以下格式：
+  - **Mac/Linux**: `source .venv/bin/activate && python ...`
+  - **直接路径调用 (推荐)**: `./.venv/bin/python ...`
+- **依赖检查**：在执行测试前，如果涉及到新引入的库，必须先检查并提示用户是否需要执行 `pip install`。
