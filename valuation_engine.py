@@ -15,6 +15,90 @@ import pandas as pd
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_EXCHANGE_RATES = {
+    "USD_CNY": 7.20,
+    "HKD_CNY": 0.92,
+    "CNY_CNY": 1.0
+}
+
+
+def fetch_exchange_rates() -> Dict[str, float]:
+    """
+    获取实时汇率（USD/CNY, HKD/CNY），使用 akshare 为主数据源，yfinance 为备选。
+    
+    Returns:
+        Dict[str, float]: 汇率字典，如 {"USD_CNY": 7.25, "HKD_CNY": 0.93, "CNY_CNY": 1.0}
+    
+    Note:
+        如果所有数据源失败，返回硬编码的默认值防止引擎崩溃。
+    """
+    rates = DEFAULT_EXCHANGE_RATES.copy()
+    
+    try:
+        df = ak.currency_boc_sina(symbol="美元", start_date="20260309", end_date="20260309")
+        if df is not None and not df.empty:
+            usd_rate = float(df['现汇买入价'].iloc[-1])
+            rates["USD_CNY"] = round(usd_rate, 4)
+    except Exception as e:
+        logger.debug(f"akshare 获取 USD/CNY 失败，尝试 yfinance: {type(e).__name__}")
+        
+        try:
+            usd_cny = yf.Ticker("USDCNY=X").history(period="1d", timeout=10)
+            if usd_cny is not None and not usd_cny.empty and 'Close' in usd_cny.columns:
+                close_val = usd_cny['Close'].iloc[-1]
+                if pd.notna(close_val):
+                    rates["USD_CNY"] = round(float(close_val), 4)
+        except (TypeError, AttributeError, IndexError, KeyError) as e:
+            logger.warning(f"yfinance 获取 USD/CNY 失败，使用默认值：{type(e).__name__}")
+        except Exception as e:
+            logger.warning(f"yfinance 获取 USD/CNY 意外错误，使用默认值：{type(e).__name__}")
+    
+    try:
+        df = ak.currency_boc_sina(symbol="港币", start_date="20260309", end_date="20260309")
+        if df is not None and not df.empty:
+            hkd_rate = float(df['现汇买入价'].iloc[-1])
+            rates["HKD_CNY"] = round(hkd_rate, 4)
+    except Exception as e:
+        logger.debug(f"akshare 获取 HKD/CNY 失败，尝试 yfinance: {type(e).__name__}")
+        
+        try:
+            hkd_cny = yf.Ticker("HKDCNY=X").history(period="1d", timeout=10)
+            if hkd_cny is not None and not hkd_cny.empty and 'Close' in hkd_cny.columns:
+                close_val = hkd_cny['Close'].iloc[-1]
+                if pd.notna(close_val):
+                    rates["HKD_CNY"] = round(float(close_val), 4)
+        except (TypeError, AttributeError, IndexError, KeyError) as e:
+            logger.warning(f"yfinance 获取 HKD/CNY 失败，使用默认值：{type(e).__name__}")
+        except Exception as e:
+            logger.warning(f"yfinance 获取 HKD/CNY 意外错误，使用默认值：{type(e).__name__}")
+    
+    return rates
+
+
+def detect_ticker_currency(ticker: str) -> str:
+    """
+    根据股票代码特征判断其原生货币。
+    
+    Args:
+        ticker: 股票代码（如 AAPL, 0700.HK, 600519.SS）
+    
+    Returns:
+        str: 货币代码 "USD", "HKD", 或 "CNY"
+    """
+    ticker_upper = ticker.upper()
+    
+    if ".HK" in ticker_upper:
+        return "HKD"
+    elif ".SS" in ticker_upper or ".SZ" in ticker_upper:
+        return "CNY"
+    elif ticker_upper.replace(".", "").isalpha():
+        return "USD"
+    else:
+        return "CNY"
 
 
 def format_universal_ticker(ticker: str) -> str:
@@ -294,7 +378,7 @@ def generate_kline_chart(ticker: str, save_dir: Path) -> Dict[str, Any]:
 
 def calculate_portfolio_valuation(positions: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """
-    计算持仓组合的精确总市值与今日总盈亏。
+    计算持仓组合的精确总市值与今日总盈亏（统一折算为 CNY）。
     
     Args:
         positions: 持仓字典，格式如：
@@ -320,12 +404,15 @@ def calculate_portfolio_valuation(positions: Dict[str, Dict[str, Any]]) -> Dict[
                     "profit_loss_percent": 16.67
                 },
                 ...
-            ]
+            ],
+            "exchange_rates": {...},
+            "currency_unit": "CNY"
         }
     """
+    exchange_rates = fetch_exchange_rates()
     holdings_result = []
-    total_market_value = 0.0
-    total_cost = 0.0
+    total_market_value_cny = 0.0
+    total_cost_cny = 0.0
     
     for ticker, position in positions.items():
         shares = position.get("shares", 0)
@@ -340,24 +427,38 @@ def calculate_portfolio_valuation(positions: Dict[str, Dict[str, Any]]) -> Dict[
                 price_data = fetch_stock_price_raw(ticker)
                 current_price = price_data["close"]
             
-            market_value = current_price * shares
-            cost_value = cost_basis * shares
-            profit_loss = market_value - cost_value
-            profit_loss_percent = (profit_loss / cost_value * 100) if cost_value != 0 else 0
+            currency = detect_ticker_currency(ticker)
+            exchange_rate = exchange_rates.get(f"{currency}_CNY", 1.0)
+            
+            native_market_value = current_price * shares
+            native_cost_value = cost_basis * shares
+            native_profit_loss = native_market_value - native_cost_value
+            profit_loss_percent = (native_profit_loss / native_cost_value * 100) if native_cost_value != 0 else 0
+            
+            market_value_cny = native_market_value * exchange_rate
+            cost_value_cny = native_cost_value * exchange_rate
+            profit_loss_cny = market_value_cny - cost_value_cny
+            
+            currency_symbol = {"USD": "$", "HKD": "HK$", "CNY": "¥"}.get(currency, "¥")
             
             holdings_result.append({
                 "ticker": ticker,
                 "shares": shares,
                 "current_price": current_price,
-                "market_value": round(market_value, 2),
-                "cost_basis": cost_basis,
-                "cost_value": round(cost_value, 2),
-                "profit_loss": round(profit_loss, 2),
+                "currency": currency,
+                "currency_symbol": currency_symbol,
+                "exchange_rate": exchange_rate,
+                "native_market_value": round(native_market_value, 2),
+                "native_cost_value": round(native_cost_value, 2),
+                "native_profit_loss": round(native_profit_loss, 2),
+                "market_value_cny": round(market_value_cny, 2),
+                "cost_value_cny": round(cost_value_cny, 2),
+                "profit_loss_cny": round(profit_loss_cny, 2),
                 "profit_loss_percent": round(profit_loss_percent, 2)
             })
             
-            total_market_value += market_value
-            total_cost += cost_value
+            total_market_value_cny += market_value_cny
+            total_cost_cny += cost_value_cny
             
         except Exception as e:
             holdings_result.append({
@@ -366,15 +467,17 @@ def calculate_portfolio_valuation(positions: Dict[str, Dict[str, Any]]) -> Dict[
                 "error": f"获取价格失败：{type(e).__name__} - {str(e)}"
             })
     
-    total_profit_loss = total_market_value - total_cost
-    total_profit_loss_percent = (total_profit_loss / total_cost * 100) if total_cost != 0 else 0
+    total_profit_loss_cny = total_market_value_cny - total_cost_cny
+    total_profit_loss_percent = (total_profit_loss_cny / total_cost_cny * 100) if total_cost_cny != 0 else 0
     
     return {
-        "total_market_value": round(total_market_value, 2),
-        "total_cost": round(total_cost, 2),
-        "total_profit_loss": round(total_profit_loss, 2),
+        "total_market_value": round(total_market_value_cny, 2),
+        "total_cost": round(total_cost_cny, 2),
+        "total_profit_loss": round(total_profit_loss_cny, 2),
         "profit_loss_percent": round(total_profit_loss_percent, 2),
         "holdings": holdings_result,
+        "exchange_rates": exchange_rates,
+        "currency_unit": "CNY",
         "calculation_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -435,7 +538,7 @@ def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict
 
 def format_portfolio_report(valuation: Dict[str, Any]) -> str:
     """
-    将 calculate_portfolio_valuation 返回的估值字典格式化为 Markdown 报告。
+    将 calculate_portfolio_valuation 返回的估值字典格式化为 Markdown 报告（多货币支持）。
     
     Args:
         valuation: calculate_portfolio_valuation 返回的估值字典
@@ -443,10 +546,14 @@ def format_portfolio_report(valuation: Dict[str, Any]) -> str:
     Returns:
         str: 格式化的 Markdown 报告字符串
     """
+    exchange_rates = valuation.get("exchange_rates", DEFAULT_EXCHANGE_RATES)
+    
     markdown_lines = [
         "## 💰 持仓市值与盈亏对账单",
         "",
         f"**计算时间**: {valuation['calculation_time']}",
+        "",
+        f"**参考汇率**: USD/CNY={exchange_rates.get('USD_CNY', 7.20):.4f}, HKD/CNY={exchange_rates.get('HKD_CNY', 0.92):.4f}",
         "",
         "### 📊 总资产概览",
         "",
@@ -456,21 +563,30 @@ def format_portfolio_report(valuation: Dict[str, Any]) -> str:
         "",
         "### 📈 持仓明细",
         "",
-        "| 代码 | 持股数 | 成本价 | 现价 | 市值 | 总成本 | 盈亏金额 | 盈亏率 |",
-        "|------|--------|--------|------|------|--------|---------|--------|",
     ]
     
     for holding in valuation['holdings']:
         if 'error' in holding:
             markdown_lines.append(
-                f"| {holding['ticker']} | {holding['shares']} | - | - | - | ❌ {holding['error']} | - |"
+                f"- **{holding['ticker']}**: ❌ {holding['error']}"
             )
         else:
+            currency_symbol = holding.get('currency_symbol', '¥')
+            native_value = holding.get('native_market_value', 0)
+            cny_value = holding.get('market_value_cny', 0)
+            cny_profit = holding.get('profit_loss_cny', 0)
+            
             markdown_lines.append(
-                f"| {holding['ticker']} | {holding['shares']} | {holding['cost_basis']} | "
-                f"{holding['current_price']} | {holding['market_value']:,.2f} | "
-                f"{holding['cost_value']:,.2f} | {holding['profit_loss']:+,.2f} | "
-                f"{holding['profit_loss_percent']:+.2f}% |"
+                f"- **{holding['ticker']}**: 现价 {currency_symbol}{holding['current_price']:.2f} | "
+                f"原生市值 {currency_symbol}{native_value:,.2f} | "
+                f"折合 ¥{cny_value:,.2f} | "
+                f"盈亏 {cny_profit:+,.2f} ({holding['profit_loss_percent']:+.2f}%)"
             )
+    
+    markdown_lines.extend([
+        "",
+        "---",
+        f"**【总计】当前折合总市值：¥{valuation['total_market_value']:,.2f}，今日总盈亏：¥{valuation['total_profit_loss']:,.2f}**"
+    ])
     
     return "\n".join(markdown_lines)
