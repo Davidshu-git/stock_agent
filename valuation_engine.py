@@ -14,7 +14,7 @@ import mplfinance as mpf
 import pandas as pd
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -417,6 +417,7 @@ def calculate_portfolio_valuation(positions: Dict[str, Dict[str, Any]]) -> Dict[
     for ticker, position in positions.items():
         shares = position.get("shares", 0)
         cost_basis = position.get("cost_basis", 0)
+        company_name = position.get("company_name", "-")
         is_etf = position.get("type", "stock") == "etf"
         
         try:
@@ -443,6 +444,7 @@ def calculate_portfolio_valuation(positions: Dict[str, Dict[str, Any]]) -> Dict[
             
             holdings_result.append({
                 "ticker": ticker,
+                "company_name": company_name,
                 "shares": shares,
                 "current_price": current_price,
                 "currency": currency,
@@ -463,6 +465,7 @@ def calculate_portfolio_valuation(positions: Dict[str, Dict[str, Any]]) -> Dict[
         except Exception as e:
             holdings_result.append({
                 "ticker": ticker,
+                "company_name": company_name,
                 "shares": shares,
                 "error": f"获取价格失败：{type(e).__name__} - {str(e)}"
             })
@@ -489,7 +492,7 @@ def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict
     Args:
         user_data: 用户记忆字典，如：
             {
-                "AAPL": "100 股，成本 200 美元/股",
+                "AAPL": "苹果公司，100 股，成本 200 美元/股",
                 "风险偏好": "激进型",
                 "513180": "10000 股，成本 0.677 元/股"
             }
@@ -497,8 +500,8 @@ def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict
     Returns:
         Dict[str, Dict[str, Any]]: 标准 positions 格式，如：
             {
-                "AAPL": {"shares": 100, "cost_basis": 200.0, "type": "stock"},
-                "513180": {"shares": 10000, "cost_basis": 0.677, "type": "etf"}
+                "AAPL": {"shares": 100, "cost_basis": 200.0, "type": "stock", "company_name": "苹果公司"},
+                "513180": {"shares": 10000, "cost_basis": 0.677, "type": "etf", "company_name": "-"}
             }
     """
     import re
@@ -514,6 +517,13 @@ def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict
             ticker = key
             holding_str = str(value)
             
+            company_name = "-"
+            parts = holding_str.replace('，', ',').split(',')
+            if parts:
+                first_part = parts[0].split(' ')[0].strip()
+                if first_part and not re.match(r'^\d', first_part):
+                    company_name = first_part
+            
             shares_match = re.search(r'(\d+)\s*股', holding_str)
             cost_match = re.search(r'成本\s*([\d.]+)', holding_str)
             
@@ -528,7 +538,8 @@ def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict
             positions[ticker] = {
                 "shares": shares,
                 "cost_basis": cost_basis,
-                "type": "etf" if is_etf else "stock"
+                "type": "etf" if is_etf else "stock",
+                "company_name": company_name
             }
         except Exception:
             continue
@@ -555,6 +566,7 @@ def format_portfolio_report(valuation: Dict[str, Any]) -> str:
         if 'error' in holding:
             portfolio_details.append({
                 "ticker": holding['ticker'],
+                "company_name": holding.get('company_name', '-'),
                 "has_error": True,
                 "error_message": holding['error']
             })
@@ -571,6 +583,7 @@ def format_portfolio_report(valuation: Dict[str, Any]) -> str:
             
             portfolio_details.append({
                 "ticker": holding['ticker'],
+                "company_name": holding.get('company_name', '-'),
                 "has_error": False,
                 "currency_symbol": currency_symbol,
                 "current_price": current_price,
@@ -602,14 +615,14 @@ def format_portfolio_report(valuation: Dict[str, Any]) -> str:
         "",
         "### 📈 持仓明细",
         "",
-        "| 标的代码 | 最新价 | 持仓成本 | 原生市值 | 折合人民币 (CNY) | 绝对盈亏 (CNY) | 盈亏率 |",
-        "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+        "| 标的代码 | 公司名称 | 最新价 | 持仓成本 | 原生市值 | 折合人民币 (CNY) | 绝对盈亏 (CNY) | 盈亏率 |",
+        "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
     ]
     
     for detail in sorted_details:
         if detail.get('has_error', False):
             markdown_lines.append(
-                f"| **{detail['ticker']}** | ❌ {detail['error_message']} | - | - | - | - | - |"
+                f"| **{detail['ticker']}** | {detail['company_name']} | ❌ {detail['error_message']} | - | - | - | - | - |"
             )
         else:
             currency_symbol = detail.get('currency_symbol', '¥')
@@ -621,7 +634,7 @@ def format_portfolio_report(valuation: Dict[str, Any]) -> str:
             pnl_percent = detail.get('pnl_percent', 0)
             
             markdown_lines.append(
-                f"| {detail['ticker']} | {currency_symbol}{current_price:.2f} | {currency_symbol}{cost_basis:.2f} | {currency_symbol}{native_value:,.2f} | ¥{cny_value:,.2f} | {cny_profit:+,.2f} | {pnl_percent:+.2f}% |"
+                f"| {detail['ticker']} | {detail['company_name']} | {currency_symbol}{current_price:.2f} | {currency_symbol}{cost_basis:.2f} | {currency_symbol}{native_value:,.2f} | ¥{cny_value:,.2f} | {cny_profit:+,.2f} | {pnl_percent:+.2f}% |"
             )
     
     summary_line = f"**【账户总计】当前折合总市值：¥{valuation['total_market_value']:,.2f}，累计总盈亏：{valuation['total_profit_loss']:+,.2f}**"
