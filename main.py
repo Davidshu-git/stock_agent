@@ -2,12 +2,15 @@ import os
 import json
 from dotenv import load_dotenv
 from pathlib import Path
-import mplfinance as mpf
 from datetime import datetime, timedelta
 from filelock import FileLock
-import yfinance as yf
-import akshare as ak
 from langchain_core.tools import tool
+from valuation_engine import (
+    format_universal_ticker,
+    fetch_stock_price_raw,
+    fetch_etf_price_raw,
+    generate_kline_chart,
+)
 # 使用openai 兼容千问
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_tool_calling_agent, AgentExecutor
@@ -121,83 +124,28 @@ class HackerMatrixCallback(BaseCallbackHandler):
         console.print("\n[bold green]▓▓▓▓▓▓▓▓ 任务执行完毕 ▓▓▓▓▓▓▓▓[/bold green]")
 
 # ==========================================
-# 插件 1：通过yahoo的标准接口查询美股、港股、A股股价 (支持指定日期)
+# 插件 1：通过 yahoo 的标准接口查询美股、港股、A 股股价 (支持指定日期)
 # ==========================================
-def format_universal_ticker(ticker: str) -> str:
-    """智能推断股票市场并格式化为 yfinance 识别的代码"""
-    ticker = ticker.strip().upper()
-    
-    # 1. 如果大模型已经很聪明地带上了后缀，直接放行
-    if "." in ticker:
-        return ticker
-        
-    # 2. 纯字母，认定为美股 (如 AAPL, TSLA)
-    if ticker.isalpha():
-        return ticker
-        
-    # 提取其中的纯数字部分
-    digits = ''.join(filter(str.isdigit, ticker))
-    
-    # 3. 港股：最多 4 位数字 (如 700 自动补齐为 0700.HK)
-    if len(digits) <= 4 and digits:
-        return f"{digits.zfill(4)}.HK"
-        
-    # 4. A 股：标准的 6 位数字
-    if len(digits) == 6:
-        # 沪市(60, 68开头)加 .SS，深市加 .SZ
-        if digits.startswith(('60', '68')):
-            return f"{digits}.SS"
-        else:
-            return f"{digits}.SZ"
-            
-    # 兜底返回原值
-    return ticker
-
 @tool
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_universal_stock_price(ticker: str, date: str = None) -> str:
     """
-    🌐 全球股票查价引擎（支持美股、A股、港股）。
+    🌐 全球股票查价引擎（支持美股、A 股、港股）。
     只需传入用户提到的代码即可（例如：AAPL, 600519, 0700），底层会自动判断市场。
     - 参数 date (可选): 'YYYY-MM-DD'。未提供则默认返回最近交易日。
     """
     try:
-        # 🌟 调用智能中间件
-        formatted_ticker = format_universal_ticker(ticker)
-        stock = yf.Ticker(formatted_ticker)
-        
-        if date:
-            try:
-                target_date = datetime.strptime(date, "%Y-%m-%d")
-                next_date = target_date + timedelta(days=1)
-                hist = stock.history(start=target_date.strftime("%Y-%m-%d"), end=next_date.strftime("%Y-%m-%d"))
-                date_label = date
-            except ValueError:
-                return "❌ 日期格式不正确。请使用 'YYYY-MM-DD' 格式。"
-        else:
-            hist = stock.history(period="1d")
-            date_label = "最近交易日"
-            
-        if hist.empty:
-            return f"❌ 未找到标的 {formatted_ticker} 在 {date_label} 的数据。"
-        
-        # 防御性数据提取：防止 API 返回部分字段缺失
-        try:
-            import pandas as pd
-            open_val = hist['Open'].iloc[0]
-            close_val = hist['Close'].iloc[0]
-            
-            # 检查 NaN 值
-            if pd.isna(open_val) or pd.isna(close_val):
-                return f"❌ {formatted_ticker} 在 {date_label} 的数据不完整（存在空值）。"
-            
-            open_p = round(float(open_val), 2)
-            close_p = round(float(close_val), 2)
-            actual_date = hist.index[0].strftime("%Y-%m-%d")
-        except (KeyError, IndexError) as e:
-            return f"❌ {formatted_ticker} 数据格式异常：{type(e).__name__} - {str(e)}"
-        
-        return f"✅ {formatted_ticker} ({actual_date}) - 开盘价：{open_p}, 收盘价：{close_p}"
+        price_data = fetch_stock_price_raw(ticker, date)
+        return (
+            f"✅ {price_data['ticker']} ({price_data['date']}) - "
+            f"开盘价：{price_data['open']}, 收盘价：{price_data['close']}"
+        )
+    except ValueError as e:
+        if "日期格式" in str(e):
+            return "❌ 日期格式不正确。请使用 'YYYY-MM-DD' 格式。"
+        return f"❌ 数据异常：{e}"
+    except IndexError as e:
+        return f"❌ 未找到标的：{e}"
     except Exception as e:
         return f"查询出错，已停止重试：{type(e).__name__} - {str(e)}"
     
@@ -215,148 +163,50 @@ def get_etf_price(etf_code: str, date: str = None) -> str:
     - 参数 date (可选): 'YYYY-MM-DD'。未提供则返回最近交易日数据。
     """
     try:
-        import pandas as pd
+        price_data = fetch_etf_price_raw(etf_code, date)
         
-        # 确保代码是 6 位数字
-        etf_code = etf_code.strip()
-        if not etf_code.isdigit() or len(etf_code) != 6:
-            return "❌ ETF 代码格式不正确，请输入 6 位数字代码（如 513050）"
-        
-        # 判断市场：沪市 (50,51,58 开头) 用.SS，深市 (15,16 开头) 用.SZ
-        if etf_code.startswith(('50', '51', '58')):
-            suffix = '.SS'
-        elif etf_code.startswith(('15', '16')):
-            suffix = '.SZ'
+        if price_data.get("source") == "akshare_spot":
+            return (
+                f"✅ ETF {etf_code} 实时行情 - 最新价：{price_data['current_price']} ({price_data['change_percent']}%)\n"
+                f"开盘：{price_data['open']}, 最高：{price_data['high']}, 最低：{price_data['low']}, 昨收：{price_data['prev_close']}\n"
+                f"成交量：{price_data['volume']}手，成交额：{price_data['amount']}万元"
+            )
         else:
-            suffix = ''  # 未知市场，让 yfinance 自己判断
-        
-        formatted_code = etf_code + suffix if suffix else etf_code
-        
-        # 优先尝试 yfinance（更稳定）
-        try:
-            stock = yf.Ticker(formatted_code)
-            
-            if date:
-                target_date = datetime.strptime(date, "%Y-%m-%d")
-                next_date = target_date + timedelta(days=1)
-                hist = stock.history(start=target_date.strftime("%Y-%m-%d"), end=next_date.strftime("%Y-%m-%d"))
-                date_label = date
-            else:
-                hist = stock.history(period="1d")
-                date_label = "最近交易日"
-            
-            if not hist.empty:
-                open_val = hist['Open'].iloc[0]
-                close_val = hist['Close'].iloc[0]
-                
-                if pd.isna(open_val) or pd.isna(close_val):
-                    raise ValueError("数据不完整")
-                
-                open_p = round(float(open_val), 3)
-                close_p = round(float(close_val), 3)
-                high_p = round(float(hist['High'].iloc[0]), 3)
-                low_p = round(float(hist['Low'].iloc[0]), 3)
-                volume = int(hist['Volume'].iloc[0])
-                actual_date = hist.index[0].strftime("%Y-%m-%d")
-                
-                return f"✅ ETF {etf_code} ({actual_date}) - 开盘：{open_p}, 收盘：{close_p}, 最高：{high_p}, 最低：{low_p}, 成交量：{volume}"
-        except Exception as yf_error:
-            # yfinance 失败时，尝试 akshare
-            console.print(f"[yellow dim]yfinance 查询失败，切换到 akshare: {yf_error}[/yellow dim]")
-            
-            if date:
-                df = ak.fund_etf_hist_em(
-                    symbol=etf_code, 
-                    period="daily", 
-                    start_date=date.replace('-', ''), 
-                    end_date=date.replace('-', ''), 
-                    adjust=""
-                )
-                if df is None or df.empty:
-                    return f"❌ 未找到 ETF {etf_code} 在 {date} 的数据，可能该日非交易日。"
-                
-                open_val = df['开盘'].iloc[0]
-                close_val = df['收盘'].iloc[0]
-                
-                if pd.isna(open_val) or pd.isna(close_val):
-                    return f"❌ ETF {etf_code} 在 {date} 的数据不完整。"
-                
-                open_p = round(float(open_val), 3)
-                close_p = round(float(close_val), 3)
-                high_p = round(float(df['最高'].iloc[0]), 3)
-                low_p = round(float(df['最低'].iloc[0]), 3)
-                volume = int(df['成交量'].iloc[0])
-                
-                return f"✅ ETF {etf_code} ({date}) - 开盘：{open_p}, 收盘：{close_p}, 最高：{high_p}, 最低：{low_p}, 成交量：{volume}"
-            else:
-                all_etfs = ak.fund_etf_spot_em()
-                df = all_etfs[all_etfs['代码'] == etf_code]
-                
-                if df is None or df.empty:
-                    return f"❌ 未找到 ETF {etf_code} 的实时行情数据，可能代码不存在或市场未开盘。"
-                
-                current_price = round(float(df['最新价'].iloc[0]), 3)
-                open_p = round(float(df['今开'].iloc[0]), 3)
-                high_p = round(float(df['最高'].iloc[0]), 3)
-                low_p = round(float(df['最低'].iloc[0]), 3)
-                prev_close = round(float(df['昨收'].iloc[0]), 3)
-                change_percent = round(float(df['涨跌幅'].iloc[0]), 2)
-                volume = int(df['成交量'].iloc[0])
-                amount = round(float(df['成交额'].iloc[0]) / 10000, 2)
-                
-                return (
-                    f"✅ ETF {etf_code} 实时行情 - 最新价：{current_price} ({change_percent}%)\n"
-                    f"开盘：{open_p}, 最高：{high_p}, 最低：{low_p}, 昨收：{prev_close}\n"
-                    f"成交量：{volume}手，成交额：{amount}万元"
-                )
-        
+            return (
+                f"✅ ETF {etf_code} ({price_data['date']}) - "
+                f"开盘：{price_data['open']}, 收盘：{price_data['close']}, "
+                f"最高：{price_data['high']}, 最低：{price_data['low']}, "
+                f"成交量：{price_data['volume']}"
+            )
+    except ValueError as e:
+        if "代码格式" in str(e):
+            return "❌ ETF 代码格式不正确，请输入 6 位数字代码（如 513050）"
+        return f"❌ 数据异常：{e}"
+    except RuntimeError as e:
+        return f"❌ 所有数据源失败：{e}。提示：A 股 ETF 数据可能因数据源限制暂时无法获取，请稍后重试。"
     except Exception as e:
-        return f"ETF 查询出错，已停止重试：{type(e).__name__} - {str(e)}。提示：A 股 ETF 数据可能因数据源限制暂时无法获取，请稍后重试。"
+        return f"ETF 查询出错，已停止重试：{type(e).__name__} - {str(e)}"
 
 
 # ==========================================
 # 插件 1.5：K 线图与 30 天走势可视化
 # ==========================================
-# 插件 1.5：K线图与 30 天走势可视化
-# ==========================================
 @tool
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def draw_universal_stock_chart(ticker: str) -> str:
     """
-    🌐 全球股票 30 天走势绘图引擎（支持美股、A股、港股）。
+    🌐 全球股票 30 天走势绘图引擎（支持美股、A 股、港股）。
     当你需要为用户生成可视化图表时调用，传入代码即可。
     """
     try:
-        # 🌟 调用智能中间件
-        formatted_ticker = format_universal_ticker(ticker)
-        stock = yf.Ticker(formatted_ticker)
-        hist = stock.history(period="1mo")
-        
-        if hist.empty:
-            return f"❌ 未找到标的 {formatted_ticker} 的历史数据，无法绘图。"
-            
-        # 统一规范文件名后缀，杜绝大模型乱拼路径
-        safe_name = formatted_ticker.replace('.', '_')
-        chart_filename = f"{safe_name}_30d_chart.png"
-        chart_path = (SANDBOX_DIR / chart_filename).resolve()
-        
-        mpf.plot(
-            hist, type='candle', volume=True, style='yahoo',
-            title=f"{formatted_ticker} 30-Day Trend", mav=(5, 10),
-            savefig=str(chart_path)
-        )
-        
-        max_price = round(hist['High'].max(), 2)
-        min_price = round(hist['Low'].min(), 2)
-        latest_close = round(hist['Close'].iloc[-1], 2)
-        
+        chart_data = generate_kline_chart(ticker, SANDBOX_DIR)
         return (
-            f"✅ {formatted_ticker} 走势图生成完毕！文件名为：{chart_filename}。\n"
-            f"【摘要】最高: {max_price}, 最低: {min_price}, 最新: {latest_close}。\n"
-            f"🚨【强制语法】：必须严格使用 `![走势图](./{chart_filename})` 嵌入 Markdown 中！"
+            f"✅ {chart_data['ticker']} 走势图生成完毕！文件名为：{chart_data['file_name']}。\n"
+            f"【摘要】最高：{chart_data['max_price']}, 最低：{chart_data['min_price']}, 最新：{chart_data['latest_close']}。\n"
+            f"🚨【强制语法】：必须严格使用 `![走势图](./{chart_data['file_name']})` 嵌入 Markdown 中！"
         )
-    except (KeyError, IndexError) as e:
-        return f"❌ {formatted_ticker} 数据格式异常：{type(e).__name__} - {str(e)}"
+    except IndexError as e:
+        return f"❌ 未找到标的：{e}"
     except Exception as e:
         return f"绘图出错，已停止重试：{type(e).__name__} - {str(e)}"
 
@@ -627,9 +477,14 @@ def update_user_memory(key: str, value: str) -> str:
     """
     🚨【记忆更新指令】：
     用于记录或更新用户的状态、偏好、持仓快照。相同 key 会直接覆盖。
-    - 参数 key: 记忆的分类标签，必须是简短明确的名词（例如："苹果公司持仓"、"风险偏好"、"报告格式要求"）。
-    - 参数 value: 具体的客观事实数据（例如："150股，成本150美元"、"激进型"、"只看Markdown结论"）。
+    - 参数 key: 记忆的分类标签，必须是简短明确的名词（例如："风险偏好"、"报告格式要求"）。
+    - 参数 value: 具体的客观事实数据（例如："150 股，成本 150 美元"、"激进型"、"只看 Markdown 结论"）。
     注意：如果同一个 key 已经存在，新的 value 将直接【覆盖】旧数据！如果用户清仓了，你可以把 value 设置为 "已清仓" 或 "无"。
+    
+    🚨 【强制代码转换】（股票持仓专属红线）：
+    当你要记录用户的具体股票持仓时，严禁使用自然语言公司名（如"苹果"、"腾讯"）作为 key！
+    你必须先自行确认，或调用 `search_company_ticker` 查明其标准的股票代码（如 "AAPL", "0700.HK", "600519.SS"），然后**严格使用该标准代码作为 key** 写入记忆。
+    例如：正确的调用是 key="AAPL", value="100 股，成本 150"，绝对不能是 key="苹果公司持仓"。
     """
     try:
         # 初始化 JSON

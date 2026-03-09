@@ -20,13 +20,13 @@ from typing import List, Dict, Any
 import schedule
 import akshare as ak
 import pandas as pd
-import yfinance as yf
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 from dotenv import load_dotenv
 from rich.console import Console
 
 from notifier import send_market_report_email
+from valuation_engine import fetch_stock_price_raw
 
 
 console: Console = Console()
@@ -39,7 +39,7 @@ def fetch_global_indices() -> str:
     """
     抓取全球核心指数当日涨跌幅数据。
 
-    使用 yfinance 获取三大核心指数（沪深 300、恒生指数、纳斯达克 100）的当日行情，
+    使用 valuation_engine.fetch_stock_price_raw 获取三大核心指数（沪深 300、恒生指数、纳斯达克 100）的当日行情，
     计算涨跌幅百分比，并提供降级容错机制。
 
     Returns:
@@ -54,24 +54,19 @@ def fetch_global_indices() -> str:
 
     results: List[str] = []
 
-    for market, config in indices_config.items():
+    for config in indices_config.values():
         ticker: str = config["ticker"]
         name: str = config["name"]
 
         try:
-            ticker_obj = yf.Ticker(ticker)
-            hist_data = ticker_obj.history(period="1d")
+            price_data = fetch_stock_price_raw(ticker)
+            open_price: float = price_data["open"]
+            close_price: float = price_data["close"]
 
-            if hist_data is not None and isinstance(hist_data, pd.DataFrame) and not hist_data.empty and "Close" in hist_data.columns:
-                close_price: float = float(hist_data["Close"].iloc[-1])
-                open_price: float = float(hist_data["Open"].iloc[-1]) if "Open" in hist_data.columns else close_price
-
-                if open_price != 0:
-                    change_pct: float = ((close_price - open_price) / open_price) * 100
-                    sign: str = "+" if change_pct >= 0 else ""
-                    results.append(f"{name}: {sign}{change_pct:.2f}%")
-                else:
-                    results.append(f"{name}: 获取失败")
+            if open_price != 0:
+                change_pct: float = ((close_price - open_price) / open_price) * 100
+                sign: str = "+" if change_pct >= 0 else ""
+                results.append(f"{name}: {sign}{change_pct:.2f}%")
             else:
                 results.append(f"{name}: 获取失败")
         except Exception:
