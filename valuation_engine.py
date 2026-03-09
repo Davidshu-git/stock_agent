@@ -624,7 +624,7 @@ def format_portfolio_report(valuation: Dict[str, Any]) -> str:
                 f"| {detail['ticker']} | {currency_symbol}{current_price:.2f} | {currency_symbol}{cost_basis:.2f} | {currency_symbol}{native_value:,.2f} | ¥{cny_value:,.2f} | {cny_profit:+,.2f} | {pnl_percent:+.2f}% |"
             )
     
-    summary_line = f"**【账户总计】当前折合总市值：¥{valuation['total_market_value']:,.2f}，今日总盈亏：{valuation['total_profit_loss']:+,.2f}**"
+    summary_line = f"**【账户总计】当前折合总市值：¥{valuation['total_market_value']:,.2f}，累计总盈亏：{valuation['total_profit_loss']:+,.2f}**"
     
     markdown_lines.extend([
         "",

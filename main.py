@@ -488,6 +488,8 @@ def update_user_memory(key: str, value: str) -> str:
     当你要记录用户的具体股票持仓时，严禁使用自然语言公司名（如"苹果"、"腾讯"）作为 key！
     你必须先自行确认，或调用 `search_company_ticker` 查明其标准的股票代码（如 "AAPL", "0700.HK", "600519.SS"），然后**严格使用该标准代码作为 key** 写入记忆。
     例如：正确的调用是 key="AAPL", value="100 股，成本 150"，绝对不能是 key="苹果公司持仓"。
+    
+    🚨【数值格式红线】：记录持仓时，必须且只能使用『成本』二字描述价格（如『100 股，成本 150』）。绝对禁止使用『买入价』、『单价』等同义词，否则底层计算引擎将无法识别！
     """
     try:
         # 初始化 JSON
@@ -633,7 +635,8 @@ def get_user_profile():
             return "暂无长期记忆"
         # 转化为大模型易读的格式
         return "\n".join([f"- 【{k}】: {v}" for k, v in data.items()])
-    except:
+    except Exception as e:
+        console.print(f"[dim]⚠️  读取长期记忆失败：{type(e).__name__}[/dim]")
         return "暂无长期记忆"
 
 # 使用 ChatOpenAI 包装器，但把底层请求地址指向阿里云
