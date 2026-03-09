@@ -574,8 +574,8 @@ def format_portfolio_report(valuation: Dict[str, Any]) -> str:
             currency_symbol = holding.get('currency_symbol', '¥')
             current_price = holding.get('current_price', 0)
             shares = holding.get('shares', 1)
-            cost_value_cny = holding.get('cost_value_cny', 0)
-            cost_basis = cost_value_cny / shares if shares > 0 else 0
+            native_cost_value = holding.get('native_cost_value', 0)
+            cost_basis = native_cost_value / shares if shares > 0 else 0
             native_value = holding.get('native_market_value', 0)
             cny_value = holding.get('market_value_cny', 0)
             cny_profit = holding.get('profit_loss_cny', 0)
