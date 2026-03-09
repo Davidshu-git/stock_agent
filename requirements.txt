@@ -31,3 +31,7 @@ ddgs~=9.8.0                        # DuckDuckGo 搜索 (股票代码盲搜)
 # 5. 💻 极客终端交互 UI (Terminal Hacker Experience)
 rich~=14.3.0                       # 终端 Markdown 与自适应布局排版
 prompt_toolkit~=3.0.0              # 带历史记录的极客级终端输入流
+
+# 6. 📧 旁路调度系统 (Daily Job Scheduler)
+schedule~=1.2.0                    # 常驻定时任务调度器
+markdown~=3.6.0                    # Markdown 转 HTML 渲染引擎
