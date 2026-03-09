@@ -48,8 +48,35 @@ def send_market_report_email(subject: str, markdown_content: str) -> bool:
 
     html_content: str = markdown.markdown(
         markdown_content,
-        extensions=["tables", "fenced_code", "toc"]
+        extensions=["tables", "fenced_code", "toc", "nl2br", "sane_lists"]
     )
+
+    styled_html: str = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333333; max-width: 900px; margin: 0 auto; padding: 20px; }}
+            h1, h2, h3 {{ color: #2c3e50; border-bottom: 1px solid #eaeaea; padding-bottom: 8px; margin-top: 24px; }}
+            p {{ margin-top: 0; margin-bottom: 16px; }}
+            ul, ol {{ margin-top: 8px; margin-bottom: 16px; padding-left: 28px; }}
+            li {{ margin-bottom: 10px; }}
+            li > p {{ margin-bottom: 6px; }}
+            li > ul, li > ol {{ margin-top: 6px; margin-bottom: 0; }}
+            table {{ width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 14px; }}
+            th, td {{ padding: 12px 15px; border: 1px solid #dddddd; text-align: left; }}
+            th {{ background-color: #f8f9fa; font-weight: bold; color: #2c3e50; }}
+            tr:nth-child(even) {{ background-color: #fafafa; }}
+            blockquote {{ border-left: 4px solid #e74c3c; margin: 0; padding-left: 15px; color: #555555; background-color: #fef9f9; padding: 10px; border-radius: 0 4px 4px 0; }}
+            code {{ background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; font-family: Consolas, monospace; color: #d35400; }}
+        </style>
+    </head>
+    <body>
+        {html_content}
+    </body>
+    </html>
+    """
 
     msg: MIMEMultipart = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -57,7 +84,7 @@ def send_market_report_email(subject: str, markdown_content: str) -> bool:
     msg["To"] = receiver_email
 
     part_text: MIMEText = MIMEText(markdown_content, "plain", "utf-8")
-    part_html: MIMEText = MIMEText(html_content, "html", "utf-8")
+    part_html: MIMEText = MIMEText(styled_html, "html", "utf-8")
 
     msg.attach(part_text)
     msg.attach(part_html)
