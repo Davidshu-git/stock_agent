@@ -538,15 +538,54 @@ def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict
 
 def format_portfolio_report(valuation: Dict[str, Any]) -> str:
     """
-    将 calculate_portfolio_valuation 返回的估值字典格式化为 Markdown 报告（多货币支持）。
+    将 calculate_portfolio_valuation 返回的估值字典格式化为标准 Markdown 表格报告（多货币支持）。
+    按持仓市值降序排列，优先展示重仓标的。
     
     Args:
         valuation: calculate_portfolio_valuation 返回的估值字典
     
     Returns:
-        str: 格式化的 Markdown 报告字符串
+        str: 格式化的 Markdown 报告字符串（包含标准表格）
     """
     exchange_rates = valuation.get("exchange_rates", DEFAULT_EXCHANGE_RATES)
+    
+    portfolio_details: List[Dict[str, Any]] = []
+    
+    for holding in valuation['holdings']:
+        if 'error' in holding:
+            portfolio_details.append({
+                "ticker": holding['ticker'],
+                "has_error": True,
+                "error_message": holding['error']
+            })
+        else:
+            currency_symbol = holding.get('currency_symbol', '¥')
+            current_price = holding.get('current_price', 0)
+            shares = holding.get('shares', 1)
+            cost_value_cny = holding.get('cost_value_cny', 0)
+            cost_basis = cost_value_cny / shares if shares > 0 else 0
+            native_value = holding.get('native_market_value', 0)
+            cny_value = holding.get('market_value_cny', 0)
+            cny_profit = holding.get('profit_loss_cny', 0)
+            pnl_percent = holding.get('profit_loss_percent', 0)
+            
+            portfolio_details.append({
+                "ticker": holding['ticker'],
+                "has_error": False,
+                "currency_symbol": currency_symbol,
+                "current_price": current_price,
+                "cost_basis": cost_basis,
+                "native_value": native_value,
+                "cny_value": cny_value,
+                "cny_profit": cny_profit,
+                "pnl_percent": pnl_percent
+            })
+    
+    sorted_details = sorted(
+        portfolio_details,
+        key=lambda x: x.get('cny_value', 0) if not x.get('has_error', False) else -1,
+        reverse=True
+    )
     
     markdown_lines = [
         "## 💰 持仓市值与盈亏对账单",
@@ -563,30 +602,33 @@ def format_portfolio_report(valuation: Dict[str, Any]) -> str:
         "",
         "### 📈 持仓明细",
         "",
+        "| 标的代码 | 最新价 | 持仓成本 | 原生市值 | 折合人民币 (CNY) | 绝对盈亏 (CNY) | 盈亏率 |",
+        "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
     ]
     
-    for holding in valuation['holdings']:
-        if 'error' in holding:
+    for detail in sorted_details:
+        if detail.get('has_error', False):
             markdown_lines.append(
-                f"- **{holding['ticker']}**: ❌ {holding['error']}"
+                f"| **{detail['ticker']}** | ❌ {detail['error_message']} | - | - | - | - | - |"
             )
         else:
-            currency_symbol = holding.get('currency_symbol', '¥')
-            native_value = holding.get('native_market_value', 0)
-            cny_value = holding.get('market_value_cny', 0)
-            cny_profit = holding.get('profit_loss_cny', 0)
+            currency_symbol = detail.get('currency_symbol', '¥')
+            current_price = detail.get('current_price', 0)
+            cost_basis = detail.get('cost_basis', 0)
+            native_value = detail.get('native_value', 0)
+            cny_value = detail.get('cny_value', 0)
+            cny_profit = detail.get('cny_profit', 0)
+            pnl_percent = detail.get('pnl_percent', 0)
             
             markdown_lines.append(
-                f"- **{holding['ticker']}**: 现价 {currency_symbol}{holding['current_price']:.2f} | "
-                f"原生市值 {currency_symbol}{native_value:,.2f} | "
-                f"折合 ¥{cny_value:,.2f} | "
-                f"盈亏 {cny_profit:+,.2f} ({holding['profit_loss_percent']:+.2f}%)"
+                f"| {detail['ticker']} | {currency_symbol}{current_price:.2f} | {currency_symbol}{cost_basis:.2f} | {currency_symbol}{native_value:,.2f} | ¥{cny_value:,.2f} | {cny_profit:+,.2f} | {pnl_percent:+.2f}% |"
             )
+    
+    summary_line = f"**【账户总计】当前折合总市值：¥{valuation['total_market_value']:,.2f}，今日总盈亏：{valuation['total_profit_loss']:+,.2f}**"
     
     markdown_lines.extend([
         "",
-        "---",
-        f"**【总计】当前折合总市值：¥{valuation['total_market_value']:,.2f}，今日总盈亏：¥{valuation['total_profit_loss']:,.2f}**"
+        summary_line
     ])
     
     return "\n".join(markdown_lines)
