@@ -14,6 +14,7 @@ from valuation_engine import (
     parse_user_profile_to_positions,
     format_portfolio_report,
 )
+from daily_job import job_routine
 # 使用openai 兼容千问
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_tool_calling_agent, AgentExecutor
@@ -591,6 +592,23 @@ def calculate_exact_portfolio_value() -> str:
     except Exception as e:
         return f"❌ 计算失败：{type(e).__name__} - {str(e)}"
 
+# ==========================================
+# 插件 9：主动触发盘后研报推送
+# ==========================================
+@tool
+def trigger_daily_report() -> str:
+    """
+    🚨【研报推送专用指令】：
+    当用户明确要求"现在给我发盘后日报"、"把今天的报告发到我邮箱"、"立刻推送研报"时，必须调用此工具。
+    调用此工具会自动在后台收集资讯、计算市值、生成报告并发送邮件，你无需再在终端输出大段的报告文本。
+    """
+    try:
+        console.print("[bold yellow]⏳ 正在拉起后台研报生成链路，请稍候...[/bold yellow]")
+        job_routine()
+        return "✅ 主动触发成功！今日盘后日报已生成并发送至您的邮箱，请查收。"
+    except Exception as e:
+        return f"❌ 触发日报生成失败：{type(e).__name__} - {str(e)}"
+
 tools = [get_universal_stock_price,
          get_etf_price,
          draw_universal_stock_chart,
@@ -600,7 +618,8 @@ tools = [get_universal_stock_price,
          analyze_local_document,
          update_user_memory,
          append_transaction_log,
-         calculate_exact_portfolio_value]
+         calculate_exact_portfolio_value,
+         trigger_daily_report]
 
 # ==========================================
 # 🧠 配置长效记忆引擎 (Long-Term Memory)
