@@ -35,3 +35,7 @@ prompt_toolkit~=3.0.0              # 带历史记录的极客级终端输入流
 # 6. 📧 旁路调度系统 (Daily Job Scheduler)
 schedule~=1.2.0                    # 常驻定时任务调度器
 markdown~=3.6.0                    # Markdown 转 HTML 渲染引擎
+pydantic~=2.12.0                   # 数据校验与 SecretStr 类型支持
+
+# 7. 🌐 网络请求基础库 (HTTP Client)
+requests~=2.32.0                   # HTTP 请求底层支持 (ddgs 依赖/异常捕获)
