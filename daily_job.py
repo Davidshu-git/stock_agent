@@ -342,6 +342,16 @@ def job_routine() -> None:
 
     console.print("[bold green]✔️  [报告生成] 盘后报告生成完毕[/bold green]")
 
+    kb_dir: Path = Path("./knowledge_base").resolve()
+    kb_dir.mkdir(parents=True, exist_ok=True)
+
+    file_name: str = f"盘后日报_{datetime.now().strftime('%Y-%m-%d_%H%M')}.md"
+
+    with open(kb_dir / file_name, "w", encoding="utf-8") as f:
+        f.write(report_content)
+
+    console.print(f"[bold green]💾 [知识库归档] 报告快照已成功沉淀至：{file_name}[/bold green]")
+
     subject: str = f"盘后报告 | {datetime.now().strftime('%Y-%m-%d')}"
 
     try:
