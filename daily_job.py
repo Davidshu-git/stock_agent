@@ -54,6 +54,7 @@ def fetch_global_indices() -> str:
     indices_config: Dict[str, Dict[str, str]] = {
         "沪深 300": {"ticker": "000300.SS", "name": "沪深 300"},
         "恒生指数": {"ticker": "^HSI", "name": "恒生指数"},
+        "恒生科技指数": {"ticker": "HSTECH.HK", "name": "恒生科技指数"},
         "纳斯达克 100": {"ticker": "^NDX", "name": "纳斯达克 100"},
     }
 
