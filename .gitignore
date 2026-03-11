@@ -20,3 +20,12 @@ agent_workspace/
 knowledge_base/
 embeddings/
 memory/
+
+# === VS Code 配置文件 ===
+# 1. 默认屏蔽整个目录（防止把你个人的字体大小、主题颜色等配置传上去）
+.vscode/*
+
+# 2. 用白名单机制（感叹号）强制放行“工程资产”
+!.vscode/tasks.json    # 保留咱们的一键 Docker 构建快捷键
+!.vscode/launch.json   # (如果未来你配了断点调试，这个也要保留)
+!.vscode/extensions.json # (可选：如果你规定了该项目必须装哪些插件，可以保留)
