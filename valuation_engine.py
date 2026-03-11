@@ -39,7 +39,8 @@ def fetch_exchange_rates() -> Dict[str, float]:
     rates = DEFAULT_EXCHANGE_RATES.copy()
     
     try:
-        df = ak.currency_boc_sina(symbol="美元", start_date="20260309", end_date="20260309")
+        today = datetime.now().strftime("%Y%m%d")
+        df = ak.currency_boc_sina(symbol="美元", start_date=today, end_date=today)
         if df is not None and not df.empty:
             usd_rate = float(df['现汇买入价'].iloc[-1])
             rates["USD_CNY"] = round(usd_rate, 4)
@@ -58,7 +59,8 @@ def fetch_exchange_rates() -> Dict[str, float]:
             logger.warning(f"yfinance 获取 USD/CNY 意外错误，使用默认值：{type(e).__name__}")
     
     try:
-        df = ak.currency_boc_sina(symbol="港币", start_date="20260309", end_date="20260309")
+        today = datetime.now().strftime("%Y%m%d")
+        df = ak.currency_boc_sina(symbol="港币", start_date=today, end_date=today)
         if df is not None and not df.empty:
             hkd_rate = float(df['现汇买入价'].iloc[-1])
             rates["HKD_CNY"] = round(hkd_rate, 4)

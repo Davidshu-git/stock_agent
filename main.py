@@ -2,11 +2,10 @@ import os
 import json
 from dotenv import load_dotenv
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from filelock import FileLock
 from langchain_core.tools import tool
 from valuation_engine import (
-    format_universal_ticker,
     fetch_stock_price_raw,
     fetch_etf_price_raw,
     generate_kline_chart,
@@ -60,12 +59,6 @@ if not dashscope_key:
 
 if not embedding_key:
     raise ValueError("❌ 致命错误：未在 .env 文件或环境变量中找到 DASHSCOPE_EMBEDDING_KEY！请检查配置。")
-
-# 强行清除当前脚本的代理环境变量，强制直连
-# os.environ.pop('http_proxy', None)
-# os.environ.pop('https_proxy', None)
-# os.environ.pop('ALL_PROXY', None)
-# os.environ.pop('all_proxy', None)
 
 # 安全配置：定义 Agent 的专属活动沙箱
 # 强制设定在当前运行目录下的 "agent_workspace" 文件夹内
