@@ -8,6 +8,7 @@
 4. 持仓估值计算
 """
 
+import socket
 import yfinance as yf
 import akshare as ak
 import mplfinance as mpf
@@ -18,8 +19,11 @@ from typing import Dict, Any, Optional, List
 import logging
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
+
+socket.setdefaulttimeout(30)
 
 
 class AkshareTimeoutError(Exception):
@@ -202,13 +206,14 @@ def fetch_stock_price_raw(ticker: str, date: Optional[str] = None) -> Dict[str, 
             next_date = target_date + timedelta(days=1)
             hist = stock.history(
                 start=target_date.strftime("%Y-%m-%d"),
-                end=next_date.strftime("%Y-%m-%d")
+                end=next_date.strftime("%Y-%m-%d"),
+                timeout=10
             )
             date_label = date
         except ValueError as e:
             raise ValueError(f"日期格式不正确：{e}")
     else:
-        hist = stock.history(period="1d")
+        hist = stock.history(period="1d", timeout=10)
         date_label = datetime.now().strftime("%Y-%m-%d")
     
     if hist.empty:
@@ -283,11 +288,12 @@ def fetch_etf_price_raw(etf_code: str, date: Optional[str] = None) -> Dict[str, 
             next_date = target_date + timedelta(days=1)
             hist = stock.history(
                 start=target_date.strftime("%Y-%m-%d"),
-                end=next_date.strftime("%Y-%m-%d")
+                end=next_date.strftime("%Y-%m-%d"),
+                timeout=10
             )
             date_label = date
         else:
-            hist = stock.history(period="1d")
+            hist = stock.history(period="1d", timeout=10)
             date_label = datetime.now().strftime("%Y-%m-%d")
         
         if not hist.empty:
@@ -420,6 +426,75 @@ def generate_kline_chart(ticker: str, save_dir: Path) -> Dict[str, Any]:
     }
 
 
+def _calculate_single_position(
+    ticker: str,
+    position: Dict[str, Any],
+    exchange_rates: Dict[str, float]
+) -> Dict[str, Any]:
+    """
+    计算单一持仓的市值与盈亏（内部纯函数，用于并发执行）。
+    
+    Args:
+        ticker: 股票代码
+        position: 持仓信息字典，包含 shares, cost_basis, type, company_name
+        exchange_rates: 汇率字典
+    
+    Returns:
+        dict: 包含该持仓的完整估值信息，如果发生异常则返回包含 "error" 的字典
+    """
+    shares = position.get("shares", 0)
+    cost_basis = position.get("cost_basis", 0)
+    company_name = position.get("company_name", "-")
+    is_etf = position.get("type", "stock") == "etf"
+    
+    try:
+        if is_etf:
+            price_data = fetch_etf_price_raw(ticker)
+            current_price = price_data.get("current_price", price_data.get("close"))
+        else:
+            price_data = fetch_stock_price_raw(ticker)
+            current_price = price_data["close"]
+        
+        currency = detect_ticker_currency(ticker)
+        exchange_rate = exchange_rates.get(f"{currency}_CNY", 1.0)
+        
+        native_market_value = current_price * shares
+        native_cost_value = cost_basis * shares
+        native_profit_loss = native_market_value - native_cost_value
+        profit_loss_percent = (native_profit_loss / native_cost_value * 100) if native_cost_value != 0 else 0
+        
+        market_value_cny = native_market_value * exchange_rate
+        cost_value_cny = native_cost_value * exchange_rate
+        profit_loss_cny = market_value_cny - cost_value_cny
+        
+        currency_symbol = {"USD": "$", "HKD": "HK$", "CNY": "¥"}.get(currency, "¥")
+        
+        return {
+            "ticker": ticker,
+            "company_name": company_name,
+            "shares": shares,
+            "current_price": current_price,
+            "currency": currency,
+            "currency_symbol": currency_symbol,
+            "exchange_rate": exchange_rate,
+            "native_market_value": round(native_market_value, 2),
+            "native_cost_value": round(native_cost_value, 2),
+            "native_profit_loss": round(native_profit_loss, 2),
+            "market_value_cny": round(market_value_cny, 2),
+            "cost_value_cny": round(cost_value_cny, 2),
+            "profit_loss_cny": round(profit_loss_cny, 2),
+            "profit_loss_percent": round(profit_loss_percent, 2)
+        }
+        
+    except Exception as e:
+        return {
+            "ticker": ticker,
+            "company_name": company_name,
+            "shares": shares,
+            "error": f"获取价格失败：{type(e).__name__} - {str(e)}"
+        }
+
+
 def calculate_portfolio_valuation(positions: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """
     计算持仓组合的精确总市值与今日总盈亏（统一折算为 CNY）。
@@ -458,61 +533,19 @@ def calculate_portfolio_valuation(positions: Dict[str, Dict[str, Any]]) -> Dict[
     total_market_value_cny = 0.0
     total_cost_cny = 0.0
     
-    for ticker, position in positions.items():
-        shares = position.get("shares", 0)
-        cost_basis = position.get("cost_basis", 0)
-        company_name = position.get("company_name", "-")
-        is_etf = position.get("type", "stock") == "etf"
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_ticker = {
+            executor.submit(_calculate_single_position, ticker, position, exchange_rates): ticker
+            for ticker, position in positions.items()
+        }
         
-        try:
-            if is_etf:
-                price_data = fetch_etf_price_raw(ticker)
-                current_price = price_data.get("current_price", price_data.get("close"))
-            else:
-                price_data = fetch_stock_price_raw(ticker)
-                current_price = price_data["close"]
+        for future in as_completed(future_to_ticker):
+            result = future.result()
+            holdings_result.append(result)
             
-            currency = detect_ticker_currency(ticker)
-            exchange_rate = exchange_rates.get(f"{currency}_CNY", 1.0)
-            
-            native_market_value = current_price * shares
-            native_cost_value = cost_basis * shares
-            native_profit_loss = native_market_value - native_cost_value
-            profit_loss_percent = (native_profit_loss / native_cost_value * 100) if native_cost_value != 0 else 0
-            
-            market_value_cny = native_market_value * exchange_rate
-            cost_value_cny = native_cost_value * exchange_rate
-            profit_loss_cny = market_value_cny - cost_value_cny
-            
-            currency_symbol = {"USD": "$", "HKD": "HK$", "CNY": "¥"}.get(currency, "¥")
-            
-            holdings_result.append({
-                "ticker": ticker,
-                "company_name": company_name,
-                "shares": shares,
-                "current_price": current_price,
-                "currency": currency,
-                "currency_symbol": currency_symbol,
-                "exchange_rate": exchange_rate,
-                "native_market_value": round(native_market_value, 2),
-                "native_cost_value": round(native_cost_value, 2),
-                "native_profit_loss": round(native_profit_loss, 2),
-                "market_value_cny": round(market_value_cny, 2),
-                "cost_value_cny": round(cost_value_cny, 2),
-                "profit_loss_cny": round(profit_loss_cny, 2),
-                "profit_loss_percent": round(profit_loss_percent, 2)
-            })
-            
-            total_market_value_cny += market_value_cny
-            total_cost_cny += cost_value_cny
-            
-        except Exception as e:
-            holdings_result.append({
-                "ticker": ticker,
-                "company_name": company_name,
-                "shares": shares,
-                "error": f"获取价格失败：{type(e).__name__} - {str(e)}"
-            })
+            if "error" not in result:
+                total_market_value_cny += result["market_value_cny"]
+                total_cost_cny += result["cost_value_cny"]
     
     total_profit_loss_cny = total_market_value_cny - total_cost_cny
     total_profit_loss_percent = (total_profit_loss_cny / total_cost_cny * 100) if total_cost_cny != 0 else 0

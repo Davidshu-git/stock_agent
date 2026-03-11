@@ -9,6 +9,7 @@
 5. 发送邮件推送
 """
 
+import socket
 import os
 import sys
 import json
@@ -26,6 +27,8 @@ from dotenv import load_dotenv
 from rich.console import Console
 
 from notifier import send_market_report_email
+
+socket.setdefaulttimeout(30)
 from valuation_engine import (
     fetch_stock_price_raw,
     parse_user_profile_to_positions,
