@@ -16,14 +16,53 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 import logging
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+import requests
 
 logger = logging.getLogger(__name__)
+
+
+class AkshareTimeoutError(Exception):
+    """akshare 请求超时异常"""
+    pass
 
 DEFAULT_EXCHANGE_RATES = {
     "USD_CNY": 7.20,
     "HKD_CNY": 0.92,
     "CNY_CNY": 1.0
 }
+
+
+@retry(
+    stop=stop_after_attempt(2),
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type((requests.exceptions.Timeout, requests.exceptions.ConnectionError))
+)
+def _fetch_akshare_rate(symbol: str, today: str) -> Optional[float]:
+    """
+    带重试和超时保护的 akshare 汇率获取函数。
+    
+    Args:
+        symbol: "美元" 或 "港币"
+        today: 日期字符串 YYYYMMDD
+    
+    Returns:
+        Optional[float]: 汇率值，失败返回 None
+    """
+    try:
+        df = ak.currency_boc_sina(symbol=symbol, start_date=today, end_date=today)
+        if df is not None and not df.empty:
+            return float(df['现汇买入价'].iloc[-1])
+    except requests.exceptions.Timeout:
+        logger.warning(f"akshare 获取 {symbol} 汇率超时")
+        raise
+    except requests.exceptions.ConnectionError:
+        logger.warning(f"akshare 获取 {symbol} 汇率连接失败")
+        raise
+    except Exception as e:
+        logger.debug(f"akshare 获取 {symbol} 汇率异常：{type(e).__name__}")
+        raise
+    return None
 
 
 def fetch_exchange_rates() -> Dict[str, float]:
@@ -37,46 +76,49 @@ def fetch_exchange_rates() -> Dict[str, float]:
         如果所有数据源失败，返回硬编码的默认值防止引擎崩溃。
     """
     rates = DEFAULT_EXCHANGE_RATES.copy()
+    today = datetime.now().strftime("%Y%m%d")
     
+    # 获取 USD/CNY
+    usd_rate = None
     try:
-        today = datetime.now().strftime("%Y%m%d")
-        df = ak.currency_boc_sina(symbol="美元", start_date=today, end_date=today)
-        if df is not None and not df.empty:
-            usd_rate = float(df['现汇买入价'].iloc[-1])
-            rates["USD_CNY"] = round(usd_rate, 4)
-    except Exception as e:
-        logger.debug(f"akshare 获取 USD/CNY 失败，尝试 yfinance: {type(e).__name__}")
-        
+        usd_rate = _fetch_akshare_rate("美元", today)
+    except Exception:
+        pass
+    
+    if usd_rate is None:
+        logger.debug("akshare 获取 USD/CNY 失败，尝试 yfinance")
         try:
             usd_cny = yf.Ticker("USDCNY=X").history(period="1d", timeout=10)
             if usd_cny is not None and not usd_cny.empty and 'Close' in usd_cny.columns:
                 close_val = usd_cny['Close'].iloc[-1]
                 if pd.notna(close_val):
-                    rates["USD_CNY"] = round(float(close_val), 4)
-        except (TypeError, AttributeError, IndexError, KeyError) as e:
-            logger.warning(f"yfinance 获取 USD/CNY 失败，使用默认值：{type(e).__name__}")
+                    usd_rate = float(close_val)
         except Exception as e:
-            logger.warning(f"yfinance 获取 USD/CNY 意外错误，使用默认值：{type(e).__name__}")
+            logger.warning(f"yfinance 获取 USD/CNY 失败，使用默认值：{type(e).__name__}")
     
+    if usd_rate:
+        rates["USD_CNY"] = round(usd_rate, 4)
+    
+    # 获取 HKD/CNY
+    hkd_rate = None
     try:
-        today = datetime.now().strftime("%Y%m%d")
-        df = ak.currency_boc_sina(symbol="港币", start_date=today, end_date=today)
-        if df is not None and not df.empty:
-            hkd_rate = float(df['现汇买入价'].iloc[-1])
-            rates["HKD_CNY"] = round(hkd_rate, 4)
-    except Exception as e:
-        logger.debug(f"akshare 获取 HKD/CNY 失败，尝试 yfinance: {type(e).__name__}")
-        
+        hkd_rate = _fetch_akshare_rate("港币", today)
+    except Exception:
+        pass
+    
+    if hkd_rate is None:
+        logger.debug("akshare 获取 HKD/CNY 失败，尝试 yfinance")
         try:
             hkd_cny = yf.Ticker("HKDCNY=X").history(period="1d", timeout=10)
             if hkd_cny is not None and not hkd_cny.empty and 'Close' in hkd_cny.columns:
                 close_val = hkd_cny['Close'].iloc[-1]
                 if pd.notna(close_val):
-                    rates["HKD_CNY"] = round(float(close_val), 4)
-        except (TypeError, AttributeError, IndexError, KeyError) as e:
-            logger.warning(f"yfinance 获取 HKD/CNY 失败，使用默认值：{type(e).__name__}")
+                    hkd_rate = float(close_val)
         except Exception as e:
-            logger.warning(f"yfinance 获取 HKD/CNY 意外错误，使用默认值：{type(e).__name__}")
+            logger.warning(f"yfinance 获取 HKD/CNY 失败，使用默认值：{type(e).__name__}")
+    
+    if hkd_rate:
+        rates["HKD_CNY"] = round(hkd_rate, 4)
     
     return rates
 

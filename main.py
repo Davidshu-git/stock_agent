@@ -16,6 +16,7 @@ from valuation_engine import (
 from daily_job import job_routine
 # 使用openai 兼容千问
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate
 from ddgs import DDGS
@@ -131,20 +132,11 @@ def get_universal_stock_price(ticker: str, date: str = None) -> str:
     只需传入用户提到的代码即可（例如：AAPL, 600519, 0700），底层会自动判断市场。
     - 参数 date (可选): 'YYYY-MM-DD'。未提供则默认返回最近交易日。
     """
-    try:
-        price_data = fetch_stock_price_raw(ticker, date)
-        return (
-            f"✅ {price_data['ticker']} ({price_data['date']}) - "
-            f"开盘价：{price_data['open']}, 收盘价：{price_data['close']}"
-        )
-    except ValueError as e:
-        if "日期格式" in str(e):
-            return "❌ 日期格式不正确。请使用 'YYYY-MM-DD' 格式。"
-        return f"❌ 数据异常：{e}"
-    except IndexError as e:
-        return f"❌ 未找到标的：{e}"
-    except Exception as e:
-        return f"查询出错，已停止重试：{type(e).__name__} - {str(e)}"
+    price_data = fetch_stock_price_raw(ticker, date)
+    return (
+        f"✅ {price_data['ticker']} ({price_data['date']}) - "
+        f"开盘价：{price_data['open']}, 收盘价：{price_data['close']}"
+    )
     
 
 # ==========================================
@@ -159,30 +151,21 @@ def get_etf_price(etf_code: str, date: str = None) -> str:
     - 参数 etf_code: 6 位 ETF 代码（如 '513050'）
     - 参数 date (可选): 'YYYY-MM-DD'。未提供则返回最近交易日数据。
     """
-    try:
-        price_data = fetch_etf_price_raw(etf_code, date)
-        
-        if price_data.get("source") == "akshare_spot":
-            return (
-                f"✅ ETF {etf_code} 实时行情 - 最新价：{price_data['current_price']} ({price_data['change_percent']}%)\n"
-                f"开盘：{price_data['open']}, 最高：{price_data['high']}, 最低：{price_data['low']}, 昨收：{price_data['prev_close']}\n"
-                f"成交量：{price_data['volume']}手，成交额：{price_data['amount']}万元"
-            )
-        else:
-            return (
-                f"✅ ETF {etf_code} ({price_data['date']}) - "
-                f"开盘：{price_data['open']}, 收盘：{price_data['close']}, "
-                f"最高：{price_data['high']}, 最低：{price_data['low']}, "
-                f"成交量：{price_data['volume']}"
-            )
-    except ValueError as e:
-        if "代码格式" in str(e):
-            return "❌ ETF 代码格式不正确，请输入 6 位数字代码（如 513050）"
-        return f"❌ 数据异常：{e}"
-    except RuntimeError as e:
-        return f"❌ 所有数据源失败：{e}。提示：A 股 ETF 数据可能因数据源限制暂时无法获取，请稍后重试。"
-    except Exception as e:
-        return f"ETF 查询出错，已停止重试：{type(e).__name__} - {str(e)}"
+    price_data = fetch_etf_price_raw(etf_code, date)
+    
+    if price_data.get("source") == "akshare_spot":
+        return (
+            f"✅ ETF {etf_code} 实时行情 - 最新价：{price_data['current_price']} ({price_data['change_percent']}%)\n"
+            f"开盘：{price_data['open']}, 最高：{price_data['high']}, 最低：{price_data['low']}, 昨收：{price_data['prev_close']}\n"
+            f"成交量：{price_data['volume']}手，成交额：{price_data['amount']}万元"
+        )
+    else:
+        return (
+            f"✅ ETF {etf_code} ({price_data['date']}) - "
+            f"开盘：{price_data['open']}, 收盘：{price_data['close']}, "
+            f"最高：{price_data['high']}, 最低：{price_data['low']}, "
+            f"成交量：{price_data['volume']}"
+        )
 
 
 # ==========================================
@@ -195,17 +178,12 @@ def draw_universal_stock_chart(ticker: str) -> str:
     🌐 全球股票 30 天走势绘图引擎（支持美股、A 股、港股）。
     当你需要为用户生成可视化图表时调用，传入代码即可。
     """
-    try:
-        chart_data = generate_kline_chart(ticker, SANDBOX_DIR)
-        return (
-            f"✅ {chart_data['ticker']} 走势图生成完毕！文件名为：{chart_data['file_name']}。\n"
-            f"【摘要】最高：{chart_data['max_price']}, 最低：{chart_data['min_price']}, 最新：{chart_data['latest_close']}。\n"
-            f"🚨【强制语法】：必须严格使用 `![走势图](./{chart_data['file_name']})` 嵌入 Markdown 中！"
-        )
-    except IndexError as e:
-        return f"❌ 未找到标的：{e}"
-    except Exception as e:
-        return f"绘图出错，已停止重试：{type(e).__name__} - {str(e)}"
+    chart_data = generate_kline_chart(ticker, SANDBOX_DIR)
+    return (
+        f"✅ {chart_data['ticker']} 走势图生成完毕！文件名为：{chart_data['file_name']}。\n"
+        f"【摘要】最高：{chart_data['max_price']}, 最低：{chart_data['min_price']}, 最新：{chart_data['latest_close']}。\n"
+        f"🚨【强制语法】：必须严格使用 `![走势图](./{chart_data['file_name']})` 嵌入 Markdown 中！"
+    )
 
 # ==========================================
 # 插件 2：代码搜索工具
@@ -217,26 +195,22 @@ def search_company_ticker(company_name: str) -> str:
     当你不知道某家公司、产品或品牌的具体美股股票代码时，必须先使用此工具。
     输入公司或产品名称（如 'aws', '淘宝', '马斯克的公司'），它会联网搜索并返回相关信息以供你提取股票代码。
     """
+    import requests
+    
     try:
-        from requests.exceptions import Timeout, ConnectionError, HTTPError
-        
-        # 自动构造搜索词，抓取前 3 条网页摘要
         query = f"{company_name} 股票代码 ticker symbol"
-        
-        # 创建 DDGS 实例并设置超时
-        ddgs = DDGS(timeout=10)
+        ddgs = DDGS()
         results = ddgs.text(query, max_results=3)
         
         if not results:
             return f"未搜索到 {company_name} 的相关股票代码。"
         
-        # 将搜索到的网页摘要直接扔给大模型，它的"大脑"会自动从里面提取出正确的字母代码
         return str(results)
-    except Timeout:
+    except requests.exceptions.Timeout:
         return f"联网搜索超时：搜索 '{company_name}' 时超过 10 秒无响应，请稍后重试。"
-    except ConnectionError:
+    except requests.exceptions.ConnectionError:
         return f"网络连接失败：无法连接到搜索服务，请检查网络状态。"
-    except HTTPError as e:
+    except requests.exceptions.HTTPError as e:
         return f"搜索服务返回错误：HTTP {e.response.status_code if hasattr(e, 'response') else 'ERROR'}。"
     except Exception as e:
         return f"联网搜索出错：{type(e).__name__} - {str(e)}"
@@ -656,13 +630,12 @@ def get_user_profile():
 
 # 使用 ChatOpenAI 包装器，但把底层请求地址指向阿里云
 llm = ChatOpenAI(
-    model="qwen3.5-plus", # 强烈推荐用 qwen-max，处理复杂逻辑和多工具路由最稳
-    api_key=dashscope_key,
-    base_url="https://coding.dashscope.aliyuncs.com/v1", # 核心：指向阿里兼容接口
+    model="qwen3.5-plus",
+    api_key=SecretStr(dashscope_key),
+    base_url="https://coding.dashscope.aliyuncs.com/v1",
     temperature=0,
-    # 🌟 新增：配置请求超时与底层自动重试机制
-    request_timeout=45,  # 设定 45 秒硬性超时阈值
-    max_retries=3        # 遇到 502/504 等网络波动自动重试 3 次
+    timeout=45,
+    max_retries=3
 )
 
 prompt = ChatPromptTemplate.from_messages([
