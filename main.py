@@ -41,6 +41,8 @@ from rich.rule import Rule           # 🌟 新增：自适应分隔线组件
 from langchain.callbacks.base import BaseCallbackHandler
 #添加超时处理逻辑
 from tenacity import retry, stop_after_attempt, wait_exponential
+# 🌟 LRU 缓存装饰器，用于 L1 内存池管理
+from functools import lru_cache
 
 # 初始化富文本控制台
 console = Console()
@@ -74,13 +76,13 @@ KB_DIR.mkdir(parents=True, exist_ok=True) # 如果没有会自动创建
 # 定义允许读取的文件后缀白名单
 ALLOWED_EXTENSIONS = {'.pdf', '.md', '.txt', '.csv'}
 
-# 🌟 新增：FAISS 向量硬盘持久化目录
+# 🌟 FAISS 向量硬盘持久化目录
 FAISS_DB_DIR = Path("./embeddings").resolve()
 FAISS_DB_DIR.mkdir(parents=True, exist_ok=True)
 
-# 🌟 新增：FAISS 向量库全局内存缓存池
-# 字典结构: { "文件绝对路径": {"mtime": 12345678.9, "vectorstore": <FAISS_Object>} }
-FAISS_CACHE = {}
+# 🌟 LRU 缓存配置：最多缓存 10 个文件的向量索引，防止内存泄漏
+# 每个向量库约 10-50MB，10 个文件约占用 500MB 内存
+MAX_FAISS_CACHE_SIZE = 10
 
 # 定义一个专门存放记忆碎片的目录
 MEMORY_DIR = Path("./memory").resolve()
@@ -296,7 +298,97 @@ def write_local_file(file_path: str, content: str) -> str:
         return f"写入文件出错：{type(e).__name__} - {str(e)}"
 
 # ==========================================
-# 插件 5：RAG 本地文档检索器 (L1内存 + L2硬盘 混合持久化架构)
+# 🧠 底层向量加载引擎（L1/L2/L3 三级穿透架构）
+# ==========================================
+@lru_cache(maxsize=MAX_FAISS_CACHE_SIZE)
+def _get_or_build_vectorstore(file_name: str, target_path_str: str, current_mtime: float):
+    """
+    带 LRU 缓存的向量库加载引擎，实现 L1 内存→L2 硬盘→L3 重建三级穿透。
+    
+    Args:
+        file_name: 文件名（如 'report.pdf'）
+        target_path_str: 文件绝对路径字符串
+        current_mtime: 文件修改时间戳
+    
+    Returns:
+        FAISS 向量库对象
+    
+    Note:
+        - 利用 lru_cache 的 maxsize 限制内存占用（默认最多 10 个文件）
+        - 利用 current_mtime 作为缓存 key 的一部分，文件修改后自动穿透失效
+    """
+    doc_cache_dir = FAISS_DB_DIR / f"{file_name}_vstore"
+    meta_file = doc_cache_dir / "meta.json"
+    
+    try:
+        embeddings = DashScopeEmbeddings(
+            dashscope_api_key=embedding_key,
+            model="text-embedding-v3",
+        )
+    except Exception as e:
+        raise RuntimeError(f"向量模型初始化失败：{type(e).__name__} - {str(e)}")
+    
+    # ==========================================
+    # 💾 尝试 L2 硬盘缓存
+    # ==========================================
+    if doc_cache_dir.exists() and meta_file.exists():
+        try:
+            with open(meta_file, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+            
+            if not isinstance(meta, dict):
+                raise TypeError("缓存元数据格式错误")
+            
+            if meta.get("mtime") == current_mtime:
+                console.print(f"[bold cyan]💾 L2 命中 (硬盘):[/bold cyan] [cyan dim]加载 {file_name} 的持久化索引[/cyan dim]")
+                vectorstore = FAISS.load_local(
+                    str(doc_cache_dir),
+                    embeddings,
+                    allow_dangerous_deserialization=True
+                )
+                return vectorstore
+        except (json.JSONDecodeError, TypeError) as e:
+            console.print(f"[bold red]缓存元数据损坏 ({type(e).__name__})，准备降级重建[/bold red]")
+        except Exception as e:
+            console.print(f"[bold red]读取硬盘缓存失败 ({type(e).__name__})，准备降级重建：{str(e)}[/bold red]")
+    
+    # ==========================================
+    # 🔄 L2 未命中：触发 L3 重建并持久化
+    # ==========================================
+    console.print(f"[bold blue]🔄 构建索引:[/bold blue] [blue dim]正在对 {file_name} 进行解析、向量化与持久化...[/blue dim]")
+    
+    target_path = Path(target_path_str)
+    ext = target_path.suffix.lower()
+    if ext == '.pdf':
+        loader = PyPDFLoader(target_path_str)
+    elif ext in ['.md', '.txt', '.csv']:
+        loader = TextLoader(target_path_str, encoding='utf-8')
+    else:
+        raise ValueError(f"不支持的文件格式：{ext}")
+    
+    docs = loader.load()
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    raw_splits = text_splitter.split_documents(docs)
+    splits = [s for s in raw_splits if s.page_content.strip()]
+    
+    if not splits:
+        raise ValueError(f"文件 {file_name} 内容为空或无法提取有效文本")
+    
+    # 构建新的向量库
+    vectorstore = FAISS.from_documents(splits, embeddings)
+    
+    # 写入 L2 硬盘
+    doc_cache_dir.mkdir(parents=True, exist_ok=True)
+    vectorstore.save_local(str(doc_cache_dir))
+    with open(meta_file, 'w', encoding='utf-8') as f:
+        json.dump({"mtime": current_mtime, "file_name": file_name}, f)
+    
+    console.print(f"[bold green]✅ 索引构建完成并已持久化到硬盘[/bold green]")
+    return vectorstore
+
+
+# ==========================================
+# 插件 5：RAG 本地文档检索器 (L1 内存 + L2 硬盘 混合持久化架构)
 # ==========================================
 @tool
 def analyze_local_document(file_name: str, query: str) -> str:
@@ -312,98 +404,16 @@ def analyze_local_document(file_name: str, query: str) -> str:
             return "❌ 安全拦截：你试图读取知识库以外的文件！"
 
         if not target_path.exists():
-            return f"❌ 找不到文件: {file_name}。请先使用 list_kb_files 工具查看当前有哪些文件。"
-            
+            return f"❌ 找不到文件：{file_name}。请先使用 list_kb_files 工具查看当前有哪些文件。"
+        
+        # 获取文件修改时间戳（用于 lru_cache 自动失效）
         current_mtime = os.path.getmtime(target_path)
         target_path_str = str(target_path)
         
-        # 为该文件计算专属的硬盘缓存目录名
-        doc_cache_dir = FAISS_DB_DIR / f"{file_name}_vstore"
-        meta_file = doc_cache_dir / "meta.json"
+        # 🚀 调用底层向量加载引擎（自动 L1/L2/L3 穿透）
+        vectorstore = _get_or_build_vectorstore(file_name, target_path_str, current_mtime)
         
-        try:
-            embeddings = DashScopeEmbeddings(
-                dashscope_api_key=embedding_key,
-                model="text-embedding-v3",
-            )
-        except Exception as e:
-            return f"❌ 向量模型初始化失败：{type(e).__name__} - {str(e)}。请检查 DASHSCOPE_EMBEDDING_KEY 配置和网络连接。"
-        
-        # ==========================================
-        # ⚡ 检查 L1 缓存 (内存)
-        # ==========================================
-        if target_path_str in FAISS_CACHE and FAISS_CACHE[target_path_str]["mtime"] == current_mtime:
-            console.print(f"[bold yellow]⚡ L1 命中 (内存):[/bold yellow] [yellow dim]极速复用 {file_name} 的向量索引[/yellow dim]")
-            vectorstore = FAISS_CACHE[target_path_str]["vectorstore"]
-            
-        else:
-            # ==========================================
-            # 💾 检查 L2 缓存 (硬盘)
-            # ==========================================
-            loaded_from_disk = False
-            if doc_cache_dir.exists() and meta_file.exists():
-                try:
-                    with open(meta_file, 'r', encoding='utf-8') as f:
-                        meta = json.load(f)
-                    
-                    # 类型检查：确保 meta 是字典
-                    if not isinstance(meta, dict):
-                        raise TypeError("缓存元数据格式错误：期望 dict 类型")
-                    
-                    # 校验硬盘缓存的时间戳是否与文件当前时间一致
-                    if meta.get("mtime") == current_mtime:
-                        console.print(f"[bold cyan]💾 L2 命中 (硬盘):[/bold cyan] [cyan dim]加载 {file_name} 的持久化索引并写回内存[/cyan dim]")
-                        # 注意：allow_dangerous_deserialization=True 是必须的，因为我们要信任自己本地生成的 pickle 文件
-                        vectorstore = FAISS.load_local(
-                            str(doc_cache_dir), 
-                            embeddings, 
-                            allow_dangerous_deserialization=True 
-                        )
-                        # 反向预热 L1 内存池
-                        FAISS_CACHE[target_path_str] = {"mtime": current_mtime, "vectorstore": vectorstore}
-                        loaded_from_disk = True
-                except json.JSONDecodeError:
-                    console.print(f"[bold red]缓存元数据损坏 (JSONDecodeError)，准备降级重建[/bold red]")
-                except TypeError as e:
-                    console.print(f"[bold red]缓存元数据格式错误 (TypeError): {str(e)}，准备降级重建[/bold red]")
-                except Exception as e:
-                    console.print(f"[bold red]读取硬盘缓存失败 ({type(e).__name__})，准备降级重建：{str(e)}[/bold red]")
-            
-            # ==========================================
-            # 🔄 均未命中 (或文件被修改)：触发 L3 重建并穿透写入
-            # ==========================================
-            if not loaded_from_disk:
-                console.print(f"[bold blue]🔄 构建索引:[/bold blue] [blue dim]正在对 {file_name} 进行解析、向量化与持久化...[/blue dim]")
-                
-                ext = target_path.suffix.lower()
-                if ext == '.pdf':
-                    loader = PyPDFLoader(target_path_str)
-                elif ext in ['.md', '.txt', '.csv']:
-                    loader = TextLoader(target_path_str, encoding='utf-8')
-                else:
-                    return f"❌ 不支持的文件格式: {ext}。目前支持 {ALLOWED_EXTENSIONS}"
-
-                docs = loader.load()
-                text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-                raw_splits = text_splitter.split_documents(docs)
-                splits = [s for s in raw_splits if s.page_content.strip()]
-                
-                if not splits:
-                    return f"❌ 文件 {file_name} 内容为空，或者无法提取有效文本。"
-                
-                # 构建新的向量库
-                vectorstore = FAISS.from_documents(splits, embeddings)
-                
-                # 写入 L1 内存
-                FAISS_CACHE[target_path_str] = {"mtime": current_mtime, "vectorstore": vectorstore}
-                
-                # 写入 L2 硬盘
-                doc_cache_dir.mkdir(parents=True, exist_ok=True)
-                vectorstore.save_local(str(doc_cache_dir))
-                with open(meta_file, 'w', encoding='utf-8') as f:
-                    json.dump({"mtime": current_mtime, "file_name": file_name}, f)
-
-        # 执行真正的检索操作
+        # 执行检索操作
         retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
         relevant_docs = retriever.invoke(query)
         
@@ -414,6 +424,10 @@ def analyze_local_document(file_name: str, query: str) -> str:
         return f"❌ 文档元数据损坏：JSONDecodeError"
     except FileNotFoundError:
         return f"❌ 文档不存在：{file_name}"
+    except ValueError as e:
+        return f"❌ 数据错误：{e}"
+    except RuntimeError as e:
+        return f"❌ 系统错误：{e}"
     except Exception as e:
         return f"解析或检索文档出错：{type(e).__name__} - {str(e)}"
 
