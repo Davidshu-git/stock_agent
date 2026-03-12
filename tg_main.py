@@ -5,6 +5,9 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
+# 类型提示
+from typing import List
+
 # 🌟 无缝引入咱们精心打磨的底层 Agent 引擎
 from main import agent_with_chat_history, get_user_profile
 
@@ -18,28 +21,78 @@ TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 if not TG_BOT_TOKEN:
     raise ValueError("🚨 致命错误：TG_BOT_TOKEN 未在 .env 文件中配置或环境变量缺失！请检查。")
 
+# 确保类型为 str（通过类型断言）
+assert TG_BOT_TOKEN is not None, "TG_BOT_TOKEN must be a string"
+
+# 🛡️ 授权用户白名单（从 .env 读取）
+ALLOWED_TG_USERS = os.getenv("ALLOWED_TG_USERS", "")
+ALLOWED_USER_IDS: list[int] = [
+    int(user_id.strip()) 
+    for user_id in ALLOWED_TG_USERS.split(",") 
+    if user_id.strip().isdigit()
+]
+
 # 开启日志，方便在终端里看请求状态
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
+def _is_authorized_user(user_id: int) -> bool:
+    """验证用户是否在授权白名单中
+    
+    Args:
+        user_id: Telegram 用户唯一标识符
+        
+    Returns:
+        bool: True 表示授权用户，False 表示未授权
+    """
+    # 未配置白名单时默认放行（向后兼容）
+    if not ALLOWED_USER_IDS:
+        return True
+    return user_id in ALLOWED_USER_IDS
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """当用户发送 /start 时触发的欢迎语"""
     user = update.effective_user
-    await update.message.reply_text(
+    message = update.message
+    
+    # 安全检查：确保 user 和 message 存在
+    if user is None or message is None:
+        logger.warning("收到无效的 /start 请求（缺少用户或消息信息）")
+        return
+        
+    if not _is_authorized_user(user.id):
+        logger.warning(f"⛔ 未授权访问尝试 /start 命令 | User ID: {user.id}")
+        await message.reply_text("⛔ 未授权访问")
+        return
+    await message.reply_text(
         f"你好，{user.first_name}！我是 OmniStock Agent。\n随时向我发送股票代码或询问大盘分析。"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """核心消息处理中枢"""
-    user_id = update.effective_user.id
-    user_msg = update.message.text
+    user = update.effective_user
+    message = update.message
+    
+    # 安全检查：确保 user 和 message 存在
+    if user is None or message is None:
+        logger.warning("收到无效的消息请求（缺少用户或消息信息）")
+        return
+        
+    user_id = user.id
+    if not _is_authorized_user(user_id):
+        message_text = message.text if message.text is not None else ""
+        logger.warning(f"⛔ 未授权消息请求 | User ID: {user_id} | Message: {message_text[:50]}...")
+        return  # 静默拒绝，不暴露任何系统信息
+    user_msg = message.text or ""
     
     logger.info(f"收到用户 {user_id} 的消息: {user_msg}")
     
     # 交互细节：让机器人在顶部显示“正在输入...”，体验拉满
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+    effective_chat = update.effective_chat
+    if effective_chat is not None:
+        await context.bot.send_chat_action(chat_id=effective_chat.id, action='typing')
     
     try:
         # 🚀 唤醒底层 AI 引擎
@@ -66,29 +119,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if img_match:
             img_filename = img_match.group(1).replace("./", "")
             img_path = (SANDBOX_DIR / img_filename).resolve()
+            message = update.message
             
-            if img_path.exists():
+            if message is not None and img_path.exists():
                 # 把文字里的 markdown 图片代码删掉，让排版更干净
                 clean_text = re.sub(r'!\[.*?\]\(.*?\)', '', reply_text).strip()
                 
                 # 直接发原图，并把大模型的分析作为图片的附带文字 (caption) 一起发出去！
                 with open(img_path, 'rb') as photo:
-                    await update.message.reply_photo(photo=photo, caption=clean_text[:1024]) # caption 限长 1024 字符
+                    await message.reply_photo(photo=photo, caption=clean_text[:1024]) # caption 限长 1024 字符
                 return
                 
         # 如果没有图片，直接发送 Markdown 文本
-        await update.message.reply_text(reply_text)
+        message = update.message
+        if message is not None:
+            await message.reply_text(reply_text)
         
     except Exception as e:
         logger.error(f"处理失败: {e}")
-        await update.message.reply_text(f"⚠️ 系统熔断：{str(e)}")
+        message = update.message
+        if message is not None:
+            await message.reply_text(f"⚠️ 系统熔断：{str(e)}")
 
 def main():
     """启动机器人"""
     logger.info("启动 OmniStock Telegram Bot...")
     
     # 构建应用
-    application = Application.builder().token(TG_BOT_TOKEN).build()
+    application = Application.builder().token(str(TG_BOT_TOKEN)).build()
 
     # 注册处理器
     application.add_handler(CommandHandler("start", start_command))
