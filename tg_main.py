@@ -119,8 +119,12 @@ def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
             
             table = ax.table(cellText=df.values, colLabels=df.columns.tolist(), cellLoc='center', loc='center')  # type: ignore[arg-type]
             table.auto_set_font_size(False)
-            table.set_fontsize(12)
+            table.set_fontsize(10)
             table.scale(1.2, 1.5)
+            
+            # 遍历所有单元格设置中文字体
+            for cell in table.get_celld().values():
+                cell.get_text().set_fontproperties('WenQuanYi Micro Hei')
             
             img_filename = f"table_render_{int(time.time())}_{idx}.png"
             img_path = (SANDBOX_DIR / img_filename).resolve()
