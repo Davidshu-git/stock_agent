@@ -229,24 +229,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"收到用户 {user_id} 的消息: {user_msg}")
     
-    # 交互细节：让机器人在顶部显示“正在输入...”，体验拉满
+    # 🌟 缓兵之计：立马给手机发一条提示，并显示顶部的"正在输入..."状态
+    status_msg = await update.message.reply_text("⏳ 正在拉取底层数据并深度推理，请稍候...")
+
     effective_chat = update.effective_chat
     if effective_chat is not None:
         await context.bot.send_chat_action(chat_id=effective_chat.id, action='typing')
     
     try:
-        # 🚀 唤醒底层 AI 引擎
-        response = agent_with_chat_history.invoke(
+        # 🚀 异步唤醒底层 AI 引擎
+        response = await agent_with_chat_history.ainvoke(
             {
                 "input": user_msg,
                 "user_profile": get_user_profile(),
                 "current_time": datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
             },
-            # 物理隔离：用 Telegram 的 User ID 作为独立记忆通道
             config={"configurable": {"session_id": f"tg_session_{user_id}"}}
         )
         
         reply_text = response['output']
+        
+        # 🌟 拿到结果后，先把"缓兵之计"的消息删掉，保持聊天界面整洁
+        await status_msg.delete()
         
         # 1. 🎯 触发表格视觉拦截器（表格图片已转为 Markdown 语法插入原文本）
         final_text, _ = render_markdown_table_to_image(reply_text)
@@ -342,7 +346,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await asyncio.sleep(0.2)
         
     except Exception as e:
-        logger.error(f"处理失败: {e}")
+        logger.error(f"处理失败：{e}")
+        # 🌟 确保即使出错也要删除等待提示，避免残留
+        await status_msg.delete()
         message = update.message
         if message is not None:
             await message.reply_text(f"⚠️ 系统熔断：{str(e)}")
@@ -351,8 +357,16 @@ def main():
     """启动机器人"""
     logger.info("启动 OmniStock Telegram Bot...")
     
-    # 构建应用
-    application = Application.builder().token(str(TG_BOT_TOKEN)).build()
+    # 👑 架构师指令：暴力破解网络超时限制，把等待时间拉满！
+    application = (
+        Application.builder()
+        .token(str(TG_BOT_TOKEN))
+        .read_timeout(120)       # 读取超时放宽到 120 秒
+        .write_timeout(120)      # 写入（发送大图片）超时放宽到 120 秒
+        .connect_timeout(60)     # 连接超时放宽到 60 秒
+        .pool_timeout(120)       # 连接池超时放宽
+        .build()
+    )
 
     # 注册处理器
     application.add_handler(CommandHandler("start", start_command))

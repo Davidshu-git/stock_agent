@@ -648,7 +648,7 @@ llm = ChatOpenAI(
     api_key=SecretStr(dashscope_key),
     base_url="https://coding.dashscope.aliyuncs.com/v1",
     temperature=0,
-    timeout=45,
+    timeout=90,
     max_retries=3
 )
 
