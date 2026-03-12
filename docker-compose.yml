@@ -11,3 +11,17 @@ services:
       - ./knowledge_base:/app/knowledge_base
       - ./embeddings:/app/embeddings
       - ./.env:/app/.env
+
+  tg-bot:
+    build: .
+    container_name: omnistock-tg-bot
+    restart: unless-stopped
+    command: ["python", "tg_main.py"]
+    volumes:
+      - ./memory:/app/memory
+      - ./agent_workspace:/app/agent_workspace
+      - ./knowledge_base:/app/knowledge_base
+      - ./embeddings:/app/embeddings
+      - ./.env:/app/.env
+    depends_on:
+      - omnistock-agent

@@ -1,4 +1,6 @@
 import os
+import re
+import time
 import logging
 from datetime import datetime
 from telegram import Update
@@ -7,6 +9,11 @@ from dotenv import load_dotenv
 
 # 类型提示
 from typing import List
+
+# 🌟 绘图引擎依赖
+import pandas as pd
+import matplotlib.pyplot as plt
+from main import SANDBOX_DIR
 
 # 🌟 无缝引入咱们精心打磨的底层 Agent 引擎
 from main import agent_with_chat_history, get_user_profile
@@ -70,6 +77,64 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"你好，{user.first_name}！我是 OmniStock Agent。\n随时向我发送股票代码或询问大盘分析。"
     )
 
+# 解决 matplotlib 中文显示方块字的问题 (使用容器内安装的文泉驿字体)
+plt.rcParams['font.sans-serif'] = ['WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'sans-serif']
+plt.rcParams['axes.unicode_minus'] = False
+
+def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
+    """
+    🎯 视觉拦截器：捕捉文本中的 Markdown 表格，并实时渲染为图片。
+    返回：(清理掉表格的文本，生成的图片绝对路径列表)
+    """
+    table_pattern = re.compile(r'((?:\|.*\|\n)+\|?(?:[-:]+[-| :]*)\|?\n(?:\|.*\|\n?)+)')
+    matches = table_pattern.findall(text)
+    
+    if not matches:
+        return text, []
+
+    image_paths = []
+    
+    for idx, md_table in enumerate(matches):
+        try:
+            lines = [line.strip() for line in md_table.strip().split('\n') if '|' in line]
+            if len(lines) < 3:
+                continue
+                
+            headers = [x.strip() for x in lines[0].split('|') if x.strip()]
+            data = []
+            for line in lines[2:]:
+                row = [x.strip() for x in line.split('|') if x.strip()]
+                if row:
+                    data.append(row)
+                    
+            if not headers or not data:
+                continue
+
+            df = pd.DataFrame(data, columns=headers)  # type: ignore[arg-type]
+            fig, ax = plt.subplots(figsize=(len(headers) * 1.5 + 1, len(data) * 0.5 + 1))
+            ax.axis('tight')
+            ax.axis('off')
+            
+            table = ax.table(cellText=df.values, colLabels=df.columns.tolist(), cellLoc='center', loc='center')  # type: ignore[arg-type]
+            table.auto_set_font_size(False)
+            table.set_fontsize(12)
+            table.scale(1.2, 1.5)
+            
+            img_filename = f"table_render_{int(time.time())}_{idx}.png"
+            img_path = (SANDBOX_DIR / img_filename).resolve()
+            plt.savefig(img_path, bbox_inches='tight', dpi=200)
+            plt.close(fig)
+            
+            image_paths.append(str(img_path))
+            
+            text = text.replace(md_table, f"\n\n📊 [表格已渲染为高清图片，请查看上方]\n\n")
+            
+        except Exception as e:
+            print(f"表格渲染拦截失败：{e}")
+            continue
+            
+    return text, image_paths
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """核心消息处理中枢"""
     user = update.effective_user
@@ -108,32 +173,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         reply_text = response['output']
         
-        # 🌟 Telegram 的超级杀手锏：它原生认识 Markdown！
-        # 但如果是我们在沙箱里生成的本地图片，我们需要拦截并发送图片文件
-        import re
-        from main import SANDBOX_DIR
+        # 1. 🎯 触发表格视觉拦截器
+        text_without_table, table_images = render_markdown_table_to_image(reply_text)
         
-        # 匹配大模型生成的 ![描述](./agent_workspace/xxx.png)
-        img_match = re.search(r'!\[.*?\]\((.*?\.png)\)', reply_text)
+        # 2. 发送渲染好的表格图片
+        for img_path in table_images:
+            try:
+                if update.message is not None:
+                    with open(img_path, 'rb') as photo:
+                        await update.message.reply_photo(photo=photo)
+            except Exception as e:
+                logger.error(f"发送表格图片失败：{e}")
+                
+        # 3. 处理剩下的文本和普通图片 (沿用原有的正则逻辑，但此时的文本是没有 Markdown 表格的)
+        # 提取本地图片路径
+        img_match = re.search(r'!\[.*?\]\((.*?\.png)\)', text_without_table)
         
         if img_match:
             img_filename = img_match.group(1).replace("./", "")
             img_path = (SANDBOX_DIR / img_filename).resolve()
-            message = update.message
             
-            if message is not None and img_path.exists():
-                # 把文字里的 markdown 图片代码删掉，让排版更干净
-                clean_text = re.sub(r'!\[.*?\]\(.*?\)', '', reply_text).strip()
-                
-                # 直接发原图，并把大模型的分析作为图片的附带文字 (caption) 一起发出去！
+            if img_path.exists() and update.message is not None:
+                clean_text = re.sub(r'!\[.*?\]\(.*?\)', '', text_without_table).strip()
                 with open(img_path, 'rb') as photo:
-                    await message.reply_photo(photo=photo, caption=clean_text[:1024]) # caption 限长 1024 字符
+                    await update.message.reply_photo(photo=photo, caption=clean_text[:1024])
                 return
                 
-        # 如果没有图片，直接发送 Markdown 文本
-        message = update.message
-        if message is not None:
-            await message.reply_text(reply_text)
+        # 如果没有普通图片，直接发送清洗后的纯文本
+        if update.message is not None:
+            await update.message.reply_text(text_without_table)
         
     except Exception as e:
         logger.error(f"处理失败: {e}")
