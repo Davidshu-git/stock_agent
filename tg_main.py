@@ -161,12 +161,13 @@ async def send_with_caption_split(
             await message.reply_photo(
                 photo=photo,
                 caption=caption,
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.MARKDOWN,
+                show_caption_above_media=True
             )
         except Exception as e:
             logger.warning(f"Caption Markdown 渲染失败，降级为纯文本：{e}")
             fallback_caption = caption.replace('*', '')
-            await message.reply_photo(photo=photo, caption=fallback_caption)
+            await message.reply_photo(photo=photo, caption=fallback_caption, show_caption_above_media=True)
     else:
         # Caption 超长拆分：
         # 1. 第一条：图片 + caption 前段（截断）
@@ -177,12 +178,13 @@ async def send_with_caption_split(
             await message.reply_photo(
                 photo=photo,
                 caption=caption_part1,
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.MARKDOWN,
+                show_caption_above_media=True
             )
         except Exception as e:
             logger.warning(f"Caption Markdown 渲染失败，降级为纯文本：{e}")
             fallback_caption = caption_part1.replace('*', '')
-            await message.reply_photo(photo=photo, caption=fallback_caption)
+            await message.reply_photo(photo=photo, caption=fallback_caption, show_caption_above_media=True)
         
         await asyncio.sleep(0.2)
         

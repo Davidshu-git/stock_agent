@@ -286,7 +286,7 @@ class TestCaptionSplitLogic:
         
         # 模拟 send_with_caption_split 逻辑
         if len(caption) <= 1024:
-            await mock_message.reply_photo(photo=mock_photo, caption=caption)
+            await mock_message.reply_photo(photo=mock_photo, caption=caption, show_caption_above_media=True)
         
         mock_message.reply_photo.assert_called_once()
 
@@ -303,7 +303,7 @@ class TestCaptionSplitLogic:
         if len(caption) > 1024:
             # 第一条：图片 + 前段
             part1 = caption[:1021] + "..."
-            await mock_message.reply_photo(photo=mock_photo, caption=part1)
+            await mock_message.reply_photo(photo=mock_photo, caption=part1, show_caption_above_media=True)
             
             # 第二条：剩余文本
             remaining = caption[1024:]
@@ -329,11 +329,12 @@ class TestCaptionSplitLogic:
             await mock_message.reply_photo(
                 photo=mock_photo,
                 caption=caption,
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                show_caption_above_media=True
             )
         except Exception:
             fallback = caption.replace('*', '')
-            await mock_message.reply_photo(photo=mock_photo, caption=fallback)
+            await mock_message.reply_photo(photo=mock_photo, caption=fallback, show_caption_above_media=True)
         
         # 验证降级后调用
         assert mock_message.reply_photo.call_count >= 1
