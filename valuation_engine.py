@@ -406,10 +406,43 @@ def generate_kline_chart(ticker: str, save_dir: Path) -> Dict[str, Any]:
     chart_filename = f"{safe_name}_30d_chart.png"
     chart_path = (save_dir / chart_filename).resolve()
     
+    # 🌟 核心 UI 升级：定制极客暗黑风高清 K 线图
+    # 1. 设置涨跌颜色 (中国习惯：红涨绿跌，使用现代扁平色系)
+    mc = mpf.make_marketcolors(
+        up='#ef5350', down='#26a69a',
+        edge='inherit', wick='inherit', volume='in'
+    )
+    
+    # 2. 设置整体暗黑主题风格
+    s = mpf.make_mpf_style(
+        marketcolors=mc,
+        figcolor='#121212',       # 图片边缘背景色：极深灰
+        facecolor='#1c1c1c',      # 坐标系内背景色：深灰
+        edgecolor='#444444',      # 边框颜色
+        gridcolor='#2a2a2a',      # 网格线颜色：隐约可见的暗色
+        gridstyle='--',           # 网格线型
+        rc={
+            'text.color': '#eeeeee', 
+            'axes.labelcolor': '#eeeeee', 
+            'xtick.color': '#eeeeee', 
+            'ytick.color': '#eeeeee',
+            'font.size': 10       # 稍微调大字体，防止在高 DPI 下太小
+        }
+    )
+
+    # 3. 设置高分辨率与自适应边缘裁切
+    save_dict = dict(fname=str(chart_path), dpi=300, bbox_inches='tight')
+
+    # 4. 执行渲染
     mpf.plot(
-        hist, type='candle', volume=True, style='yahoo',
-        title=f"{formatted_ticker} 30-Day Trend", mav=(5, 10),
-        savefig=str(chart_path)
+        hist, 
+        type='candle', 
+        volume=True, 
+        style=s, 
+        title=f"\n{formatted_ticker} 30-Day Trend", 
+        mav=(5, 10),
+        figsize=(10, 6),          # 调整画布长宽比，让走势更舒展
+        savefig=save_dict
     )
     
     max_price = round(float(hist['High'].max()), 2)
