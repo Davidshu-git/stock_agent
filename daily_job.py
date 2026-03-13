@@ -324,7 +324,10 @@ def job_routine() -> None:
     """
     盘后调度主流程：获取数据 -> 生成报告 -> 发送邮件。
     """
-    console.print(f"\n[bold cyan]⏰ [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 开始执行盘后调度任务...[/bold cyan]")
+    import multiprocessing
+    pid = multiprocessing.current_process().pid
+    console.print(f"\n[bold cyan]⏰ [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                  f"开始执行盘后调度任务 (PID: {pid})...[/bold cyan]")
 
     try:
         news_text: str = fetch_global_market_news()

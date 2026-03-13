@@ -20,6 +20,7 @@ agent_workspace/
 knowledge_base/
 embeddings/
 memory/
+jobs/
 
 # 6. OpenCode 架构方案目录（自动生成的临时设计文档）
 .opencode/

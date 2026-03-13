@@ -577,21 +577,123 @@ def calculate_exact_portfolio_value() -> str:
         return f"❌ 计算失败：{type(e).__name__} - {str(e)}"
 
 # ==========================================
-# 插件 9：主动触发盘后研报推送
+# 插件 9：主动触发盘后研报推送 (独立进程版)
 # ==========================================
 @tool
 def trigger_daily_report() -> str:
     """
     🚨【研报推送专用指令】：
-    当用户明确要求"现在给我发盘后日报"、"把今天的报告发到我邮箱"、"立刻推送研报"时，必须调用此工具。
-    调用此工具会自动在后台收集资讯、计算市值、生成报告并发送邮件，你无需再在终端输出大段的报告文本。
+    当用户明确要求"现在给我发盘后日报"、"立刻推送研报"时，必须调用此工具。
+    此工具已接入独立进程异步脱机引擎，你调用后只需告诉用户"任务已后台执行，请等待推送"即可。
+    
+    Returns:
+        str: 任务提交结果，包含任务 ID 用于追踪
     """
     try:
-        console.print("[bold yellow]⏳ 正在拉起后台研报生成链路，请稍候...[/bold yellow]")
-        job_routine()
-        return "✅ 主动触发成功！今日盘后日报已生成并发送至您的邮箱，请查收。"
+        import subprocess
+        import sys
+        import uuid
+        from pathlib import Path
+        import json
+        
+        job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        
+        status_dir = Path("./jobs/status").resolve()
+        status_dir.mkdir(parents=True, exist_ok=True)
+        
+        initial_status = {
+            "job_id": job_id,
+            "status": "pending",
+            "created_at": datetime.now().isoformat(),
+            "started_at": None,
+            "completed_at": None,
+            "error": None,
+            "log_path": None
+        }
+        
+        with open(status_dir / f"{job_id}.json", 'w', encoding='utf-8') as f:
+            json.dump(initial_status, f, ensure_ascii=False, indent=2)
+        
+        console.print(f"[bold yellow]⏳ 正在将研报任务投递至独立进程 (Job ID: {job_id})...[/bold yellow]")
+        
+        process = subprocess.Popen(
+            [sys.executable, "spawn_job.py", "--job-id", job_id],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+        
+        console.print(f"[bold green]✅ 进程已启动 | PID: {process.pid}[/bold green]")
+        
+        return (
+            f"✅ 研报任务已成功挂载至后台独立进程！\n\n"
+            f"**任务 ID**: `{job_id}`\n"
+            f"**进程 PID**: `{process.pid}`\n\n"
+            f"您可以继续我们的对话，或者锁屏手机去忙别的。大约 **30~60 秒** 后，排版精美的研报将自动弹送到您的屏幕上。\n\n"
+            f"如需查看实时进度，可询问我：`查询任务 {job_id} 的状态`"
+        )
+        
     except Exception as e:
         return f"❌ 触发日报生成失败：{type(e).__name__} - {str(e)}"
+
+
+# ==========================================
+# 插件 10：查询研报任务状态
+# ==========================================
+@tool
+def query_job_status(job_id: str) -> str:
+    """
+    查询研报任务的执行状态。
+    
+    Args:
+        job_id: 任务唯一 ID（格式：job_YYYYMMDD_HHMMSS_abc123）
+    
+    Returns:
+        str: 任务状态报告
+    """
+    try:
+        from pathlib import Path
+        import json
+        
+        status_file = Path(f"./jobs/status/{job_id}.json").resolve()
+        
+        if not status_file.exists():
+            return f"❌ 未找到任务 {job_id}，请检查任务 ID 是否正确。"
+        
+        with open(status_file, 'r', encoding='utf-8') as f:
+            status = json.load(f)
+        
+        status_map = {
+            "pending": "⏳ 等待执行",
+            "running": "🔄 正在执行中",
+            "completed": "✅ 已完成",
+            "failed": "❌ 执行失败"
+        }
+        
+        result = [
+            f"📊 **任务状态报告**",
+            f"- **任务 ID**: `{job_id}`",
+            f"- **当前状态**: {status_map.get(status.get('status'), '未知')}",
+            f"- **创建时间**: {status.get('created_at', 'N/A')}",
+        ]
+        
+        if status.get('started_at'):
+            result.append(f"- **开始时间**: {status.get('started_at')}")
+        
+        if status.get('completed_at'):
+            result.append(f"- **完成时间**: {status.get('completed_at')}")
+        
+        if status.get('error'):
+            result.append(f"- **错误信息**: {status.get('error')}")
+        
+        if status.get('log_path'):
+            result.append(f"- **日志路径**: {status.get('log_path')}")
+        
+        return "\n".join(result)
+        
+    except Exception as e:
+        return f"❌ 查询失败：{type(e).__name__} - {str(e)}"
+
 
 tools = [get_universal_stock_price,
          get_etf_price,
@@ -603,7 +705,8 @@ tools = [get_universal_stock_price,
          update_user_memory,
          append_transaction_log,
          calculate_exact_portfolio_value,
-         trigger_daily_report]
+         trigger_daily_report,
+         query_job_status]
 
 # ==========================================
 # 🧠 配置长效记忆引擎 (Long-Term Memory)
