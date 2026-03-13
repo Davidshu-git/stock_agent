@@ -4,7 +4,7 @@ import time
 import logging
 import asyncio
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from dotenv import load_dotenv
@@ -84,6 +84,17 @@ async def send_dashboard(message_obj: Message, first_name: str):
     await message_obj.reply_text(welcome_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
 
+async def post_init(application: Application):
+    """🤖 生命周期钩子：系统启动时自动向 Telegram 服务器注册左下角原生菜单"""
+    commands = [
+        BotCommand("start", "🏠 唤醒全息主控台"),
+        BotCommand("portfolio", "💰 精确核算总市值与持仓"),
+        BotCommand("report", "📊 立即生成今日盘后研报"),
+    ]
+    await application.bot.set_my_commands(commands)
+    logger.info("✅ Telegram 原生汉堡菜单 (Bot Menu) 挂载成功！")
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     处理 /start 命令，调用面板生成器
@@ -105,6 +116,32 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     await send_dashboard(message, user.first_name)
+
+
+async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """快捷路由：核算市值"""
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
+        return
+    if not _is_authorized_user(user.id):
+        return
+    
+    await message.reply_text(f"<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>精确核算总市值</i></blockquote>", parse_mode=ParseMode.HTML)
+    await execute_agent_task("帮我精确计算当前总市值和持仓盈亏，并生成财务明细报表。", message, user.id, context)
+
+
+async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """快捷路由：生成研报"""
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
+        return
+    if not _is_authorized_user(user.id):
+        return
+    
+    await message.reply_text(f"<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>生成盘后研报</i></blockquote>", parse_mode=ParseMode.HTML)
+    await execute_agent_task("立刻触发生成今日的盘后报告。", message, user.id, context)
 
 async def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
     """
@@ -514,11 +551,14 @@ def main():
         .write_timeout(120)      # 写入（发送大图片）超时放宽到 120 秒
         .connect_timeout(60)     # 连接超时放宽到 60 秒
         .pool_timeout(120)       # 连接池超时放宽
+        .post_init(post_init)    # 👈 核心：在此处挂载生命周期钩子
         .build()
     )
 
     # 注册处理器
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("portfolio", portfolio_command))
+    application.add_handler(CommandHandler("report", report_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_button_click))
 
