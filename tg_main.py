@@ -208,16 +208,23 @@ async def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
     # 👑 极客级 CSS：暗黑金融终端质感
     css = """
     :root { --bg: #1A1D21; --border: #2D3239; --text: #E3E5E8; --header-bg: #22262B; --stripe: #1E2126; }
-    body {
-        background-color: transparent;
+    html, body {
+        background-color: var(--bg);
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
         margin: 0; padding: 20px;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
     }
     #capture_area {
-        display: inline-block; background-color: var(--bg); padding: 16px;
+        /* 🌟 核心修复 1：摒弃 inline-block，使用 max-content 绝对贴合内容 */
+        width: max-content; 
+        background-color: var(--bg); 
+        padding: 16px;
         border: 1px solid var(--border);
+        /* 🌟 核心修复 2：更改盒模型计算方式，防止 padding 引起的亚像素抖动 */
+        box-sizing: border-box;
+        /* 🌟 核心修复 3：暴力裁切，把超出整数边界的 0.x 像素底色直接切掉 */
+        overflow: hidden;
     }
     table { border-collapse: collapse; color: var(--text); font-size: 14px; margin: 0; }
     th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); }
@@ -251,6 +258,10 @@ async def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
                 img_path = (SANDBOX_DIR / img_filename).resolve()
                 
                 element = await page.wait_for_selector('#capture_area')
+                
+                # 🌟 终极防线：注入 JS 计算真实亚像素宽度，并向上取整锁定物理像素，彻底封死右侧缝隙！
+                await element.evaluate("el => el.style.width = Math.ceil(el.getBoundingClientRect().width) + 'px'")
+                
                 await element.screenshot(path=str(img_path), omit_background=True)
                 
                 image_paths.append(str(img_path))
