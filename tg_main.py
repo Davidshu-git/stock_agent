@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 # 类型提示
 from typing import List
 
-from main import SANDBOX_DIR
+from main import SANDBOX_DIR, KB_DIR
 
 # 🚀 新视觉引擎依赖
 import markdown
@@ -537,6 +537,71 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await execute_agent_task(user_msg, message, user_id, context, update)
 
 
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    🗂️ 移动端知识投喂中枢：拦截用户上传的文件，存入知识库并触发向量解析
+    """
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None or message.document is None:
+        return
+
+    user_id = user.id
+    if not _is_authorized_user(user_id):
+        logger.warning(f"⛔ 未授权的文件上传尝试 | User ID: {user_id}")
+        return
+
+    doc = message.document
+    file_name = doc.file_name or f"upload_{int(time.time())}.txt"
+
+    # 1. 拦截非法格式 (只允许 PDF, MD, TXT, CSV)
+    allowed_exts = {'.pdf', '.md', '.txt', '.csv'}
+    ext = os.path.splitext(file_name)[1].lower()
+    if ext not in allowed_exts:
+        await message.reply_text(f"⚠️ 系统拒绝接收：不支持的文件格式 {ext}。目前仅支持 PDF, MD, TXT, CSV。")
+        return
+
+    # 2. 状态反馈：开始下载
+    status_msg = await message.reply_text(
+        f"⏳ <b>正在接收高密文件：</b> {file_name}...\n<blockquote><i>正在进行物理层传输与安全校验...</i></blockquote>", 
+        parse_mode=ParseMode.HTML
+    )
+
+    try:
+        # 获取 Telegram 服务器上的真实文件对象
+        tg_file = await context.bot.get_file(doc.file_id)
+        
+        # 组装本地绝对路径
+        save_path = (KB_DIR / file_name).resolve()
+        
+        # 🌟 核心防御：防止通过恶意文件名 (如 ../../etc/passwd) 进行目录穿越攻击
+        if not save_path.is_relative_to(KB_DIR):
+            await status_msg.edit_text("❌ 安全拦截：非法的文件名导致越权风险，已销毁。")
+            return
+
+        # 3. 物理落盘 (存入 knowledge_base 目录)
+        await tg_file.download_to_drive(custom_path=save_path)
+        
+        # 删除下载提示
+        await status_msg.delete()
+
+        # 4. 🌟 核心连招：生成隐形 Prompt，强行唤醒 Agent 的 RAG 引擎去读这份文件！
+        rag_prompt = f"我已经把一份名为 '{file_name}' 的文件放进了知识库。请调用 analyze_local_document 工具，仔细阅读这篇文档，并给我一份结构化的核心内容摘要。"
+        
+        # 在界面上回显幽灵输入，极客感拉满
+        await message.reply_text(
+            f"<blockquote><b>⚡ 知识黑洞吞噬成功：</b>\n<i>已将 {file_name} 挂载至知识库。\n正在触发自动切片、向量解析与 RAG 深度阅读...</i></blockquote>", 
+            parse_mode=ParseMode.HTML
+        )
+        
+        # 复用咱们写好的核心执行流！
+        await execute_agent_task(rag_prompt, message, user_id, context, update)
+
+    except Exception as e:
+        logger.error(f"文件接收与解析失败：{e}")
+        await status_msg.edit_text(f"❌ 链路崩塌：文件处理失败 ({type(e).__name__})")
+
+
 async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     拦截 Inline 按钮的点击事件，转化为 Agent Prompt
@@ -707,6 +772,7 @@ def main():
     application.add_handler(CommandHandler("portfolio", portfolio_command))
     application.add_handler(CommandHandler("report", report_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CallbackQueryHandler(handle_button_click))
 
     # 启动长轮询，Bot 会一直挂在后台监听
