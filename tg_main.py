@@ -144,6 +144,37 @@ def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
     return text, image_paths
 
 
+def translate_to_telegram_html(text: str) -> str:
+    """将标准 Markdown 安全地转换为 Telegram HTML 方言，提升 UI 质感"""
+    if not text:
+        return text
+    
+    # 1. 基础转义 (防御性编程：防止 LLM 吐出的 < > 破坏 HTML 结构)
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    
+    # 2. 渲染代码块与行内代码
+    text = re.sub(
+        r'```(\w+)?\n(.*?)```', 
+        lambda m: f'<pre><code class="language-{m.group(1) or "text"}">{m.group(2)}</code></pre>', 
+        text, flags=re.DOTALL
+    )
+    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+    
+    # 3. 渲染加粗与删除线
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text)
+    
+    # 4. 🌟 核心 UI 升级：标题降级为带前缀的引用块 <blockquote>
+    text = re.sub(r'^###\s+(.*)', r'<blockquote><b>■ \1</b></blockquote>', text, flags=re.MULTILINE)
+    text = re.sub(r'^##\s+(.*)', r'<blockquote><b>● \1</b></blockquote>', text, flags=re.MULTILINE)
+    text = re.sub(r'^#\s+(.*)', r'<blockquote><b>◆ \1</b></blockquote>', text, flags=re.MULTILINE)
+    
+    # 5. 渲染超链接
+    text = re.sub(r'\[(.*?)\]\((.*?)\)', r'<a href="\2">\1</a>', text)
+    
+    return text
+
+
 async def send_with_caption_split(
     message,
     photo,
@@ -165,12 +196,12 @@ async def send_with_caption_split(
             await message.reply_photo(
                 photo=photo,
                 caption=caption,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.HTML,
                 show_caption_above_media=True
             )
         except Exception as e:
-            logger.warning(f"Caption Markdown 渲染失败，降级为纯文本：{e}")
-            fallback_caption = caption.replace('*', '')
+            logger.warning(f"Caption HTML 渲染失败，降级为纯文本：{e}")
+            fallback_caption = re.sub(r'<[^>]+>', '', caption)
             await message.reply_photo(photo=photo, caption=fallback_caption, show_caption_above_media=True)
     else:
         # Caption 超长拆分：
@@ -182,12 +213,12 @@ async def send_with_caption_split(
             await message.reply_photo(
                 photo=photo,
                 caption=caption_part1,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.HTML,
                 show_caption_above_media=True
             )
         except Exception as e:
-            logger.warning(f"Caption Markdown 渲染失败，降级为纯文本：{e}")
-            fallback_caption = caption_part1.replace('*', '')
+            logger.warning(f"Caption HTML 渲染失败，降级为纯文本：{e}")
+            fallback_caption = re.sub(r'<[^>]+>', '', caption_part1)
             await message.reply_photo(photo=photo, caption=fallback_caption, show_caption_above_media=True)
         
         await asyncio.sleep(0.2)
@@ -203,9 +234,9 @@ async def send_with_caption_split(
                 remaining = ""
             
             try:
-                await message.reply_text(text_chunk, parse_mode=ParseMode.MARKDOWN)
+                await message.reply_text(text_chunk, parse_mode=ParseMode.HTML)
             except Exception as e:
-                fallback = text_chunk.replace('*', '')
+                fallback = re.sub(r'<[^>]+>', '', text_chunk)
                 await message.reply_text(fallback)
             
             await asyncio.sleep(0.2)
@@ -256,17 +287,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         final_text, _ = render_markdown_table_to_image(reply_text)
         
         # ==========================================
-        # 👑 2. Markdown 方言翻译器 (Standard -> Telegram Legacy)
-        # ==========================================
-        # 转换加粗：将标准 **文字** 替换为 Telegram 的 *文字*
-        final_text = re.sub(r'\*\*(.*?)\*\*', r'*\1*', final_text)
-        # 降级标题：Telegram 不支持 # 标题，转换为带视觉层级的纯文本符号
-        final_text = re.sub(r'^###\s+(.*)', r'■ \1', final_text, flags=re.MULTILINE)
-        final_text = re.sub(r'^##\s+(.*)', r'● \1', final_text, flags=re.MULTILINE)
-        final_text = re.sub(r'^#\s+(.*)', r'◆ \1', final_text, flags=re.MULTILINE)
-
-        # ==========================================
-        # 🚀 3. 终极渲染引擎：图片携带前置文本作为 caption
+        # 🚀 2. 终极渲染引擎：图片携带前置文本作为 caption
         # ==========================================
         # 使用正则表达式，将文本按照 ![描述](路径) 切片，保留图片语法本身作为独立块
         chunks = re.split(r'(!\[.*?\]\(.*?\))', final_text)
@@ -300,11 +321,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     try:
                         with open(img_path, 'rb') as photo:
                             if raw_caption:
-                                # 调用 caption 拆分发送函数
+                                html_caption = translate_to_telegram_html(raw_caption)
                                 await send_with_caption_split(
-                                    update.message, photo, raw_caption
+                                    update.message, photo, html_caption
                                 )
-                                # 标记前一个文本已消费
                                 is_consumed[i-1] = True
                             else:
                                 # 纯图片发送（无前置文本）
@@ -331,15 +351,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # 跳过发送，等图片发送时作为 caption 一起发
                     continue
                 else:
-                    # 正常发送文本（带防御性降级）
+                    # HTML 渲染后发送文本（带防御性降级）
                     if update.message is not None:
+                        html_text = translate_to_telegram_html(chunk)
                         try:
                             await update.message.reply_text(
-                                chunk, parse_mode=ParseMode.MARKDOWN
+                                html_text, parse_mode=ParseMode.HTML
                             )
                         except Exception as e:
-                            logger.warning(f"Markdown 渲染失败，降级为纯文本发送：{e}")
-                            fallback_text = chunk.replace('*', '')
+                            logger.warning(f"HTML 渲染失败，降级为纯文本发送：{e}")
+                            fallback_text = re.sub(r'<[^>]+>', '', html_text)
                             await update.message.reply_text(fallback_text)
                         
                         # 微小延迟，锁死文章阅读流顺序
