@@ -12,10 +12,11 @@ from dotenv import load_dotenv
 # 类型提示
 from typing import List
 
-# 🌟 绘图引擎依赖
-import pandas as pd
-import matplotlib.pyplot as plt
 from main import SANDBOX_DIR
+
+# 🚀 新视觉引擎依赖
+import markdown
+from playwright.async_api import async_playwright
 
 # 🌟 无缝引入咱们精心打磨的底层 Agent 引擎
 from main import agent_with_chat_history, get_user_profile
@@ -79,14 +80,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"你好，{user.first_name}！我是 OmniStock Agent。\n随时向我发送股票代码或询问大盘分析。"
     )
 
-# 解决 matplotlib 中文显示方块字的问题 (使用容器内安装的文泉驿字体)
-plt.rcParams['font.sans-serif'] = ['WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'sans-serif']
-plt.rcParams['axes.unicode_minus'] = False
-
-def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
+async def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
     """
-    🎯 视觉拦截器：捕捉文本中的 Markdown 表格，并实时渲染为图片。
-    返回：(清理掉表格的文本，生成的图片绝对路径列表)
+    🚀 终极视觉拦截器：利用 Playwright 浏览器内核，将 Markdown 表格渲染为具有 Bloomberg 质感的 Web UI 并精准截图。
     """
     table_pattern = re.compile(r'((?:\|.*\|\n)+\|?(?:[-:]+[-| :]*)\|?\n(?:\|.*\|\n?)+)')
     matches = table_pattern.findall(text)
@@ -96,50 +92,62 @@ def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
 
     image_paths = []
     
-    for idx, md_table in enumerate(matches):
-        try:
-            lines = [line.strip() for line in md_table.strip().split('\n') if '|' in line]
-            if len(lines) < 3:
+    # 👑 极客级 CSS：暗黑金融终端质感
+    css = """
+    :root { --bg: #1A1D21; --border: #2D3239; --text: #E3E5E8; --header-bg: #22262B; --stripe: #1E2126; }
+    body {
+        background-color: transparent;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+        margin: 0; padding: 20px;
+    }
+    #capture_area {
+        display: inline-block; background-color: var(--bg); padding: 16px;
+        border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+    table { border-collapse: collapse; color: var(--text); font-size: 14px; margin: 0; }
+    th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); }
+    th {
+        background-color: var(--header-bg); font-weight: 600; color: #A0A5AD;
+        text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:nth-child(even) td { background-color: var(--stripe); }
+    """
+    
+    # 启动极其轻量的无头浏览器
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu'])
+        page = await browser.new_page()
+        
+        for idx, md_table in enumerate(matches):
+            try:
+                # 1. 纯净转换：Markdown 表格 -> HTML <table>
+                html_table = markdown.markdown(md_table, extensions=['tables'])
+                
+                # 2. 组装完整网页
+                full_html = f"<!DOCTYPE html><html><head><style>{css}</style></head><body><div id='capture_area'>{html_table}</div></body></html>"
+                
+                # 3. 注入浏览器并等待渲染
+                await page.set_content(full_html)
+                
+                # 4. 魔法时刻：精准锁定 div，无视背景进行像素级裁切截图！
+                img_filename = f"table_render_{int(time.time())}_{idx}.png"
+                img_path = (SANDBOX_DIR / img_filename).resolve()
+                
+                element = await page.wait_for_selector('#capture_area')
+                await element.screenshot(path=str(img_path), omit_background=True)
+                
+                image_paths.append(str(img_path))
+                
+                # 5. 替换原文文本
+                img_markdown = f"\n\n![表格](./{img_filename})\n\n"
+                text = text.replace(md_table, img_markdown)
+                
+            except Exception as e:
+                logger.error(f"Playwright 表格渲染失败：{e}")
                 continue
                 
-            headers = [x.strip() for x in lines[0].split('|') if x.strip()]
-            data = []
-            for line in lines[2:]:
-                row = [x.strip() for x in line.split('|') if x.strip()]
-                if row:
-                    data.append(row)
-                    
-            if not headers or not data:
-                continue
-
-            df = pd.DataFrame(data, columns=headers)  # type: ignore[arg-type]
-            fig, ax = plt.subplots(figsize=(len(headers) * 1.5 + 1, len(data) * 0.5 + 1))
-            ax.axis('tight')
-            ax.axis('off')
-            
-            table = ax.table(cellText=df.values, colLabels=df.columns.tolist(), cellLoc='center', loc='center')  # type: ignore[arg-type]
-            table.auto_set_font_size(False)
-            table.set_fontsize(10)
-            table.scale(1.2, 1.5)
-            
-            # 遍历所有单元格设置中文字体
-            for cell in table.get_celld().values():
-                cell.get_text().set_fontproperties('WenQuanYi Micro Hei')
-            
-            img_filename = f"table_render_{int(time.time())}_{idx}.png"
-            img_path = (SANDBOX_DIR / img_filename).resolve()
-            plt.savefig(img_path, bbox_inches='tight', dpi=200)
-            plt.close(fig)
-            
-            image_paths.append(str(img_path))
-            
-            # 将表格图片以 Markdown 语法插入原文本位置（与普通图片一致）
-            img_markdown = f"\n\n![表格](./{img_filename})\n\n"
-            text = text.replace(md_table, img_markdown)
-            
-        except Exception as e:
-            print(f"表格渲染拦截失败：{e}")
-            continue
+        await browser.close()
             
     return text, image_paths
 
@@ -284,7 +292,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.delete()
         
         # 1. 🎯 触发表格视觉拦截器（表格图片已转为 Markdown 语法插入原文本）
-        final_text, _ = render_markdown_table_to_image(reply_text)
+        final_text, _ = await render_markdown_table_to_image(reply_text)
         
         # ==========================================
         # 🚀 2. 终极渲染引擎：图片携带前置文本作为 caption

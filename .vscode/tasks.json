@@ -14,6 +14,17 @@
                 "panel": "new",
                 "clear": true
             }
+        },
+        {
+            "label": "🐳 Docker: 无缓存构建基础镜像",
+            "type": "shell",
+            "command": "docker build -f Dockerfile.base -t stock-base:latest --no-cache .",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "clear": true
+            }
         }
     ]
 }
