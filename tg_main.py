@@ -372,8 +372,8 @@ async def send_with_caption_split(
         
         await asyncio.sleep(0.2)
         
-        # 剩余部分作为纯文本发送
-        remaining = caption[max_length:]
+        # 剩余部分作为纯文本发送（修复吞字 Bug：从截断处无缝衔接）
+        remaining = caption[max_length-3:]
         while remaining:
             if len(remaining) > 4096:  # Telegram 文本消息上限
                 text_chunk = remaining[:4096]
@@ -856,13 +856,16 @@ async def broadcast_to_telegram(text: str):
                                 # 降级截断处理
                                 try:
                                     if len(html_caption) <= 1024:
-                                        await bot.send_photo(chat_id=user_id, photo=photo, caption=html_caption, parse_mode=ParseMode.HTML)
+                                        await bot.send_photo(chat_id=user_id, photo=photo, caption=html_caption, parse_mode=ParseMode.HTML, show_caption_above_media=True)
                                     else:
-                                        await bot.send_photo(chat_id=user_id, photo=photo, caption=html_caption[:1021]+"...", parse_mode=ParseMode.HTML)
-                                        await bot.send_message(chat_id=user_id, text=html_caption[1024:], parse_mode=ParseMode.HTML)
+                                        # 开启图片沉底魔法
+                                        await bot.send_photo(chat_id=user_id, photo=photo, caption=html_caption[:1021]+"...", parse_mode=ParseMode.HTML, show_caption_above_media=True)
+                                        # 修复吞字 Bug
+                                        await bot.send_message(chat_id=user_id, text=html_caption[1021:], parse_mode=ParseMode.HTML)
                                 except Exception:
                                     fallback = re.sub(r'<[^>]+>', '', html_caption)
-                                    await bot.send_photo(chat_id=user_id, photo=photo, caption=fallback[:1024])
+                                    # 降级模式也开启魔法参数
+                                    await bot.send_photo(chat_id=user_id, photo=photo, caption=fallback[:1024], show_caption_above_media=True)
                                 is_consumed[i-1] = True
                             else:
                                 await bot.send_photo(chat_id=user_id, photo=photo)
