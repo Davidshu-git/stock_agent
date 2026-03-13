@@ -18,6 +18,9 @@ from main import SANDBOX_DIR
 import markdown
 from playwright.async_api import async_playwright
 
+# 🌟 LangChain 异步回调核心依赖
+from langchain_core.callbacks import AsyncCallbackHandler
+
 # 🌟 无缝引入咱们精心打磨的底层 Agent 引擎
 from main import agent_with_chat_history, get_user_profile
 
@@ -128,7 +131,7 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     await message.reply_text(f"<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>精确核算总市值</i></blockquote>", parse_mode=ParseMode.HTML)
-    await execute_agent_task("帮我精确计算当前总市值和持仓盈亏，并生成财务明细报表。", message, user.id, context)
+    await execute_agent_task("帮我精确计算当前总市值和持仓盈亏，并生成财务明细报表。", message, user.id, context, update)
 
 
 async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,7 +144,53 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     await message.reply_text(f"<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>生成盘后研报</i></blockquote>", parse_mode=ParseMode.HTML)
-    await execute_agent_task("立刻触发生成今日的盘后报告。", message, user.id, context)
+    await execute_agent_task("立刻触发生成今日的盘后报告。", message, user.id, context, update)
+
+class AsyncTelegramCallbackHandler(AsyncCallbackHandler):
+    """拦截 Agent 的异步执行流，实时动态更新到 Telegram 屏幕上"""
+    
+    def __init__(self, status_message: Message):
+        self.status_message = status_message
+        self.last_update_time = 0.0
+
+    async def _safe_edit(self, text: str):
+        """防抖更新，避免触发 Telegram 严格的 API 频率限制 (Rate Limit)"""
+        current_time = time.time()
+        # 限制更新频率为最高 1 秒/次
+        if current_time - self.last_update_time < 1.0:
+            await asyncio.sleep(1.0 - (current_time - self.last_update_time))
+            
+        try:
+            await self.status_message.edit_text(text, parse_mode=ParseMode.HTML)
+            self.last_update_time = time.time()
+        except Exception:
+            pass  # 忽略 "Message is not modified" 等冗余报错
+
+    async def on_tool_start(self, serialized: dict, input_str: str, **kwargs):
+        """当大模型决定调用某个工具时触发"""
+        tool_name = serialized.get("name", "tool")
+        
+        # 极客风的工具状态映射表
+        tool_map = {
+            "get_universal_stock_price": "📈 正在拉取全球实时盘面数据...",
+            "get_etf_price": "📊 正在拉取 ETF 基金核心数据...",
+            "draw_universal_stock_chart": "🎨 正在启动绘图引擎渲染 K 线...",
+            "search_company_ticker": "🔍 正在全网检索股票代码...",
+            "calculate_exact_portfolio_value": "🧮 正在使用 CPU ALU 精确核算财务数据...",
+            "analyze_local_document": "📚 正在穿透本地向量库检索研报...",
+            "write_local_file": "📝 正在排版并生成最终深度报告...",
+            "update_user_memory": "🧠 正在将关键信息写入长期记忆库..."
+        }
+        msg = tool_map.get(tool_name, f"⚡ 正在挂载系统组件：{tool_name}...")
+        
+        ui_text = f"<blockquote><b>🤖 OmniStock 引擎运转中...</b></blockquote>\n<i>{msg}</i>"
+        await self._safe_edit(ui_text)
+        
+    async def on_tool_end(self, output: str, **kwargs):
+        """当工具执行完毕并返回数据给大模型时触发"""
+        ui_text = f"<blockquote><b>🤖 OmniStock 引擎运转中...</b></blockquote>\n<i>✔️ 数据提取完毕，正在进行逻辑推理...</i>"
+        await self._safe_edit(ui_text)
+
 
 async def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
     """
@@ -317,7 +366,8 @@ async def execute_agent_task(
     user_msg: str, 
     message: Message, 
     user_id: int,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
+    update: Update
 ):
     """
     抽象后的核心任务执行流，可被文本消息或按钮点击复用
@@ -327,29 +377,41 @@ async def execute_agent_task(
         message: Telegram Message 对象，用于发送回复
         user_id: 用户唯一标识符，用于 session 隔离
         context: Telegram Context 对象，包含 bot 实例和会话状态
+        update: Telegram Update 对象，用于获取 chat 信息
     """
     logger.info(f"[execute_agent_task] 开始执行任务 | user_id={user_id}, msg_length={len(user_msg)}")
     
-    # 🌟 缓兵之计：立马给手机发一条提示，并显示顶部的"正在输入..."状态
-    status_msg = await message.reply_text("⏳ 正在拉取底层数据并深度推理，请稍候...")
-
+    # 🌟 1. 下发初始高颜值占位符
+    status_msg = await message.reply_text(
+        "<blockquote><b>🤖 OmniStock 引擎已唤醒</b></blockquote>\n<i>⏳ 正在建立神经连接...</i>", 
+        parse_mode=ParseMode.HTML
+    )
+    
     # 触发打字状态
-    await context.bot.send_chat_action(chat_id=message.chat.id, action='typing')
+    effective_chat = update.effective_chat
+    if effective_chat is not None:
+        await context.bot.send_chat_action(chat_id=effective_chat.id, action='typing')
+    
+    # 🌟 2. 实例化你的专属 Telegram 回调拦截器
+    tg_callback = AsyncTelegramCallbackHandler(status_msg)
     
     try:
-        # 🚀 异步唤醒底层 AI 引擎
+        # 🚀 3. 异步唤醒底层 AI 引擎，并将拦截器强行注入配置 (Config)！
         response = await agent_with_chat_history.ainvoke(
             {
                 "input": user_msg,
                 "user_profile": get_user_profile(),
                 "current_time": datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
             },
-            config={"configurable": {"session_id": f"tg_session_{user_id}"}}
+            config={
+                "configurable": {"session_id": f"tg_session_{user_id}"},
+                "callbacks": [tg_callback]  # 👈 核心挂载点
+            }
         )
         
         reply_text = response['output']
         
-        # 🌟 拿到结果后，先把"缓兵之计"的消息删掉，保持聊天界面整洁
+        # 🌟 4. 推理结束后，依然保留删掉占位符的逻辑，保持界面整洁
         await status_msg.delete()
         
         # 1. 🎯 触发表格视觉拦截器（表格图片已转为 Markdown 语法插入原文本）
@@ -471,7 +533,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"收到用户 {user_id} 的消息：{user_msg}")
     
     # 将任务丢给核心执行流
-    await execute_agent_task(user_msg, message, user_id, context)
+    await execute_agent_task(user_msg, message, user_id, context, update)
 
 
 async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -536,7 +598,7 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode=ParseMode.HTML
         )
         # 复用核心执行流，无缝对接大模型
-        await execute_agent_task(user_msg, query.message, user_id, context)  # type: ignore
+        await execute_agent_task(user_msg, query.message, user_id, context, update)  # type: ignore
 
 
 def main():
