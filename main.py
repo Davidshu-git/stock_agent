@@ -627,10 +627,8 @@ def trigger_daily_report() -> str:
         
         return (
             f"✅ 研报任务已成功挂载至后台独立进程！\n\n"
-            f"**任务 ID**: `{job_id}`\n"
-            f"**进程 PID**: `{process.pid}`\n\n"
-            f"您可以继续我们的对话，或者锁屏手机去忙别的。大约 **3-4 分钟** 后，排版精美的研报将自动弹送到您的屏幕上。\n\n"
-            f"如需查看实时进度，可点击menu查询任务进度"
+            f"**任务 ID**: <code>{job_id}</code>\n\n"
+            f"您可以继续聊天或锁屏手机。大约 3~4 分钟后，研报将自动推送到您的屏幕。"
         )
         
     except Exception as e:

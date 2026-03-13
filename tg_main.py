@@ -798,8 +798,57 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
     # 路由表：将隐藏指令映射为精确的工程 Prompt
     if cmd == "cmd_portfolio":
         user_msg = "帮我精确计算当前总市值和持仓盈亏，并生成财务明细报表。"
+        if user_msg and query.message:
+            await query.message.reply_text(
+                f"<blockquote><b>⚡ 战术面板指令注入：</b>\n<i>{user_msg}</i></blockquote>",
+                parse_mode=ParseMode.HTML
+            )
+            await execute_agent_task(user_msg, query.message, user_id, context, update)  # type: ignore
     elif cmd == "cmd_daily_report":
-        user_msg = "立刻触发生成今日的盘后报告。"
+        # ⚡ 脊髓反射启动：绝对绕过大模型，用纯 Python 直接拉起后台进程！
+        import subprocess
+        import sys
+        import uuid
+        import json
+        from pathlib import Path
+        
+        # 1. 生成唯一任务 ID
+        job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        
+        # 2. 强行初始化本地状态文件
+        status_dir = Path("./jobs/status").resolve()
+        status_dir.mkdir(parents=True, exist_ok=True)
+        initial_status = {
+            "job_id": job_id,
+            "status": "pending",
+            "created_at": datetime.now().isoformat()
+        }
+        with open(status_dir / f"{job_id}.json", 'w', encoding='utf-8') as f:
+            json.dump(initial_status, f, ensure_ascii=False, indent=2)
+            
+        # 3. 暴力弹射：直接唤醒 spawn_job.py 独立进程
+        subprocess.Popen(
+            [sys.executable, "spawn_job.py", "--job-id", job_id],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+        
+        # 4. 毫秒级 UI 反馈：直接组装带有"刷新进度"功能的面板推给用户
+        reply_text = (
+            f"✅ 研报任务已成功挂载至后台独立进程！\n\n"
+            f"**任务 ID**: <code>{job_id}</code>\n\n"
+            f"您可以继续聊天或锁屏手机。大约 30~60 秒后，研报将自动推送到您的屏幕。"
+        )
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data=f"check_job:{job_id}")],
+            [InlineKeyboardButton("🏠 唤醒主控台", callback_data="cmd_home")]
+        ])
+        
+        # 发送提示卡片，并直接 return 结束，绝对不惊动大模型
+        await query.message.reply_text(reply_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        return
     elif cmd == "cmd_kb_list":
         user_msg = "列出知识库里现在有哪些文件可以读取？"
     else:
