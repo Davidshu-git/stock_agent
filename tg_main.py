@@ -217,7 +217,7 @@ async def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
     }
     #capture_area {
         display: inline-block; background-color: var(--bg); padding: 16px;
-        border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        border: 1px solid var(--border);
     }
     table { border-collapse: collapse; color: var(--text); font-size: 14px; margin: 0; }
     th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); }
