@@ -24,6 +24,8 @@ from langchain_core.callbacks import AsyncCallbackHandler
 # 🌟 无缝引入咱们精心打磨的底层 Agent 引擎
 from main import agent_with_chat_history, get_user_profile
 
+
+
 # 🛡️ 安全兜底：加载 .env 文件
 load_dotenv()
 
@@ -65,6 +67,36 @@ def _is_authorized_user(user_id: int) -> bool:
         return True
     return user_id in ALLOWED_USER_IDS
 
+
+def authorized(func):
+    """
+    🛡️ 权限校验装饰器：自动验证用户是否在授权白名单中
+    
+    用法：
+        @authorized
+        async def my_command(update, context):
+            ...
+    """
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        message = update.message
+        
+        # 验证有效性
+        if user is None or message is None:
+            logger.warning(f"收到无效的 {func.__name__} 请求（缺少用户或消息信息）")
+            return
+            
+        # 权限校验
+        if not _is_authorized_user(user.id):
+            logger.warning(f"⛔ 未授权访问尝试 {func.__name__} | User ID: {user.id}")
+            await message.reply_text("⛔ 未授权访问")
+            return
+        
+        # 调用原函数
+        return await func(update, context)
+    
+    return wrapper
+
 async def send_dashboard(message_obj: Message, first_name: str):
     """
     下发全息操控面板 (解耦复用)
@@ -74,9 +106,10 @@ async def send_dashboard(message_obj: Message, first_name: str):
         first_name: 用户名字
     """
     keyboard = [
-        [InlineKeyboardButton("💰 精确核算总市值与持仓明细", callback_data="cmd_portfolio")],
-        [InlineKeyboardButton("📊 立刻触发生成今日盘后研报", callback_data="cmd_daily_report")],
-        [InlineKeyboardButton("🌍 查看知识库当前可用文件集", callback_data="cmd_kb_list")]
+        [InlineKeyboardButton("💼 盘点当前持仓与盈亏", callback_data="cmd_portfolio")],
+        [InlineKeyboardButton("📝 极速触发盘后研报", callback_data="cmd_daily_report")],
+        [InlineKeyboardButton("📊 查询最新任务进度", callback_data="cmd_status")],
+        [InlineKeyboardButton("📚 调阅历史情报档案", callback_data="cmd_kb_list")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     welcome_text = (
@@ -91,14 +124,15 @@ async def post_init(application: Application):
     """🤖 机器人启动时的钩子：强行改写客户端左下角的横线菜单"""
     await application.bot.set_my_commands([
         BotCommand("start", "🏠 唤醒主控台"),
-        BotCommand("status", "⏱️ 查询任务进度"),
-        BotCommand("portfolio", "💰 精确核算总市值与持仓"),
-        BotCommand("report", "📊 立即生成今日盘后研报"),
-        BotCommand("kb", "📚 查看知识库文件"),
+        BotCommand("portfolio", "💼 盘点当前持仓与盈亏"),
+        BotCommand("report", "📝 极速触发盘后研报"),
+        BotCommand("status", "📊 查询最新任务进度"),
+        BotCommand("kb", "📚 调阅历史情报档案"),
     ])
     logger.info("✅ 左下角全局菜单 (Bot Commands) 注入成功！")
 
 
+@authorized
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     处理 /start 命令，调用面板生成器
@@ -110,55 +144,118 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.message
     
-    if user is None or message is None:
-        logger.warning("收到无效的 /start 请求（缺少用户或消息信息）")
-        return
-        
-    if not _is_authorized_user(user.id):
-        logger.warning(f"⛔ 未授权访问尝试 /start 命令 | User ID: {user.id}")
-        await message.reply_text("⛔ 未授权访问")
-        return
-        
     await send_dashboard(message, user.first_name)
 
 
+@authorized
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """快捷路由：核算市值"""
-    user = update.effective_user
-    message = update.message
-    if user is None or message is None:
-        return
-    if not _is_authorized_user(user.id):
-        return
+    """
+    快捷路由：个人持仓与盈亏盘点（调用大模型）
     
-    await message.reply_text(f"<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>精确核算总市值</i></blockquote>", parse_mode=ParseMode.HTML)
-    await execute_agent_task("帮我精确计算当前总市值和持仓盈亏，并生成财务明细报表。", message, user.id, context, update)
+    Args:
+        update: Telegram Update 对象
+        context: Telegram Context 对象
+    """
+    message = update.message
+    
+    # 调用大模型处理持仓核算
+    user_msg = "帮我精确计算当前总市值和持仓盈亏，并生成财务明细报表。"
+    await message.reply_text(
+        f"<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>精确核算总市值</i></blockquote>",
+        parse_mode=ParseMode.HTML
+    )
+    await execute_agent_task(user_msg, message, update.effective_user.id, context, update)
 
 
+async def _dispatch_report_task(message: Message, job_id: str) -> None:
+    """
+    公共函数：派发研报任务到后台独立进程（复用逻辑）
+    
+    Args:
+        message: Telegram Message 对象，用于发送回复
+        job_id: 任务唯一 ID
+    """
+    # 1. 强行初始化本地状态文件
+    status_dir = Path("./jobs/status").resolve()
+    status_dir.mkdir(parents=True, exist_ok=True)
+    initial_status = {
+        "job_id": job_id,
+        "status": "pending",
+        "created_at": datetime.now().isoformat()
+    }
+    with open(status_dir / f"{job_id}.json", 'w', encoding='utf-8') as f:
+        json.dump(initial_status, f, ensure_ascii=False, indent=2)
+        
+    # 2. 暴力弹射：直接唤醒 spawn_job.py 独立进程
+    subprocess.Popen(
+        [sys.executable, "spawn_job.py", "--job-id", job_id],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True
+    )
+    
+    # 3. 毫秒级 UI 反馈：直接组装带有"刷新进度"功能的面板
+    reply_text = (
+        f"✅ 研报任务已成功挂载至后台独立进程！\n\n"
+        f"**任务 ID**: <code>{job_id}</code>\n\n"
+        f"您可以继续聊天或锁屏手机。大约 30~60 秒后，研报将自动推送到您的屏幕。"
+    )
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data=f"check_job:{job_id}")],
+        [InlineKeyboardButton("🏠 唤醒主控台", callback_data="cmd_home")]
+    ])
+    
+    # 发送提示卡片
+    await message.reply_text(reply_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
+@authorized
 async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """快捷路由：生成研报"""
-    user = update.effective_user
-    message = update.message
-    if user is None or message is None:
-        return
-    if not _is_authorized_user(user.id):
-        return
+    """
+    快捷路由：极速触发盘后研报（脊髓反射模式，绕过大模型）
     
-    await message.reply_text(f"<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>生成盘后研报</i></blockquote>", parse_mode=ParseMode.HTML)
-    await execute_agent_task("立刻触发生成今日的盘后报告。", message, user.id, context, update)
+    Args:
+        update: Telegram Update 对象
+        context: Telegram Context 对象
+    """
+    message = update.message
+    
+    try:
+        import subprocess
+        import sys
+        import uuid
+        
+        # 1. 生成唯一任务 ID
+        job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        
+        # 2. 调用公共派发函数
+        await _dispatch_report_task(message, job_id)
+        return
+        
+    except Exception as e:
+        logger.error(f"/report 命令执行失败：{e}")
+        await message.reply_text(f"⚠️ 任务派发失败：{type(e).__name__} - {str(e)}")
 
 
+@authorized
 async def kb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """快捷路由：查看知识库文件列表"""
-    user = update.effective_user
-    message = update.message
-    if user is None or message is None:
-        return
-    if not _is_authorized_user(user.id):
-        return
+    """
+    快捷路由：调阅历史情报档案（调用大模型）
     
-    await message.reply_text(f"<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>查看知识库文件</i></blockquote>", parse_mode=ParseMode.HTML)
-    await execute_agent_task("列出知识库里现在有哪些文件可以读取？", message, user.id, context, update)
+    Args:
+        update: Telegram Update 对象
+        context: Telegram Context 对象
+    """
+    message = update.message
+    
+    # 调用大模型处理知识库查询
+    user_msg = "列出知识库里现在有哪些文件可以读取？"
+    await message.reply_text(
+        f"<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>查看知识库文件</i></blockquote>",
+        parse_mode=ParseMode.HTML
+    )
+    await execute_agent_task(user_msg, message, update.effective_user.id, context, update)
 
 class AsyncTelegramCallbackHandler(AsyncCallbackHandler):
     """拦截 Agent 的异步执行流，实时动态更新到 Telegram 屏幕上"""
@@ -601,28 +698,27 @@ def _get_latest_job_id() -> str:
     return latest_file.stem  # 返回去掉后缀的纯 job_id
 
 
+@authorized
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理来自左下角菜单的 /status 快捷指令"""
-    try:
-        latest_job_id = _get_latest_job_id()
-        if not latest_job_id:
-            await update.message.reply_text("📭 当前系统没有任何后台任务记录。")
-            return
-            
-        status_text = _read_job_status_sync(latest_job_id)
+    message = update.message
+    latest_job_id = _get_latest_job_id()
+    
+    if not latest_job_id:
+        await message.reply_text("📭 当前系统没有任何后台任务记录。")
+        return
         
-        # 我们在这个状态卡片上保留一个刷新按钮，方便用户直接在这个气泡上反复点
-        # 使用特殊标记 latest，每次点击都会重新获取最新 job_id
-        refresh_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 刷新此任务", callback_data="check_job:latest")]
-        ])
-        await update.message.reply_text(status_text, parse_mode=ParseMode.HTML, reply_markup=refresh_keyboard)
-    except Exception as e:
-        logger.error(f"/status 命令执行失败：{e}")
-        if update.message:
-            await update.message.reply_text("⚠️ 网络暂时不可用，请稍后重试。")
+    status_text = _read_job_status_sync(latest_job_id)
+    
+    # 我们在这个状态卡片上保留一个刷新按钮，方便用户直接在这个气泡上反复点
+    # 使用特殊标记 latest，每次点击都会重新获取最新 job_id
+    refresh_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 刷新此任务", callback_data="check_job:latest")]
+    ])
+    await message.reply_text(status_text, parse_mode=ParseMode.HTML, reply_markup=refresh_keyboard)
 
 
+@authorized
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     文本消息处理中枢
@@ -633,39 +729,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     user = update.effective_user
     message = update.message
-    
-    # 安全检查：确保 user 和 message 存在
-    if user is None or message is None:
-        logger.warning("收到无效的消息请求（缺少用户或消息信息）")
-        return
-        
-    user_id = user.id
-    if not _is_authorized_user(user_id):
-        message_text = message.text if message.text is not None else ""
-        logger.warning(f"⛔ 未授权消息请求 | User ID: {user_id} | Message: {message_text[:50]}...")
-        return  # 静默拒绝，不暴露任何系统信息
-    
     user_msg = message.text or ""
-    logger.info(f"收到用户 {user_id} 的消息：{user_msg}")
+    
+    logger.info(f"收到用户 {user.id} 的消息：{user_msg}")
     
     # 将任务丢给核心执行流
-    await execute_agent_task(user_msg, message, user_id, context, update)
+    await execute_agent_task(user_msg, message, user.id, context, update)
 
 
+@authorized
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     🗂️ 移动端知识投喂中枢：拦截用户上传的文件，存入知识库并触发向量解析 (增强防御与计时版)
     """
     user = update.effective_user
     message = update.message
-    if user is None or message is None or message.document is None:
-        return
-
-    user_id = user.id
-    if not _is_authorized_user(user_id):
-        return
-
     doc = message.document
+    
     file_name = doc.file_name or f"upload_{int(time.time())}.txt"
     file_size_mb = doc.file_size / (1024 * 1024) if doc.file_size else 0
 
@@ -770,10 +850,9 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         status_text = _read_job_status_sync(job_id)
         
-        # 重新生成带刷新功能的面板
+        # 重新生成带刷新功能的面板（只保留刷新按钮）
         refresh_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data=cmd)],
-            [InlineKeyboardButton("🏠 唤醒主控台", callback_data="cmd_home")]
+            [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data=cmd)]
         ])
         
         try:
@@ -798,59 +877,34 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
     # 路由表：将隐藏指令映射为精确的工程 Prompt
     if cmd == "cmd_portfolio":
         user_msg = "帮我精确计算当前总市值和持仓盈亏，并生成财务明细报表。"
-        if user_msg and query.message:
-            await query.message.reply_text(
-                f"<blockquote><b>⚡ 战术面板指令注入：</b>\n<i>{user_msg}</i></blockquote>",
-                parse_mode=ParseMode.HTML
-            )
-            await execute_agent_task(user_msg, query.message, user_id, context, update)  # type: ignore
+        
     elif cmd == "cmd_daily_report":
-        # ⚡ 脊髓反射启动：绝对绕过大模型，用纯 Python 直接拉起后台进程！
+        # ⚡ 脊髓反射启动：复用公共派发函数
         import subprocess
         import sys
         import uuid
-        import json
-        from pathlib import Path
         
         # 1. 生成唯一任务 ID
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         
-        # 2. 强行初始化本地状态文件
-        status_dir = Path("./jobs/status").resolve()
-        status_dir.mkdir(parents=True, exist_ok=True)
-        initial_status = {
-            "job_id": job_id,
-            "status": "pending",
-            "created_at": datetime.now().isoformat()
-        }
-        with open(status_dir / f"{job_id}.json", 'w', encoding='utf-8') as f:
-            json.dump(initial_status, f, ensure_ascii=False, indent=2)
-            
-        # 3. 暴力弹射：直接唤醒 spawn_job.py 独立进程
-        subprocess.Popen(
-            [sys.executable, "spawn_job.py", "--job-id", job_id],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True
-        )
-        
-        # 4. 毫秒级 UI 反馈：直接组装带有"刷新进度"功能的面板推给用户
-        reply_text = (
-            f"✅ 研报任务已成功挂载至后台独立进程！\n\n"
-            f"**任务 ID**: <code>{job_id}</code>\n\n"
-            f"您可以继续聊天或锁屏手机。大约 30~60 秒后，研报将自动推送到您的屏幕。"
-        )
-        
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data=f"check_job:{job_id}")],
-            [InlineKeyboardButton("🏠 唤醒主控台", callback_data="cmd_home")]
-        ])
-        
-        # 发送提示卡片，并直接 return 结束，绝对不惊动大模型
-        await query.message.reply_text(reply_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        # 2. 调用公共派发函数（需要 query.message 转为 Message 对象）
+        if query.message and isinstance(query.message, Message):
+            await _dispatch_report_task(query.message, job_id)
         return
+        
+    elif cmd == "cmd_status":
+        # 复用 status_command 的纯 Python 逻辑
+        if query.message and isinstance(query.message, Message):
+            fake_update = Update(
+                update_id=query.message.message_id,
+                message=query.message
+            )
+            await status_command(fake_update, context)
+        return
+        
     elif cmd == "cmd_kb_list":
         user_msg = "列出知识库里现在有哪些文件可以读取？"
+        
     else:
         logger.warning(f"未知按钮指令：{cmd}")
         return
