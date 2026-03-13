@@ -16,12 +16,14 @@ import json
 import time
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, TypedDict
 
 import schedule
 import akshare as ak
 import pandas as pd
 from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph, START, END
+from langchain_core.prompts import ChatPromptTemplate
 from pydantic import SecretStr
 from dotenv import load_dotenv
 from rich.console import Console
@@ -41,6 +43,17 @@ console: Console = Console()
 
 
 load_dotenv()
+
+
+class ReportState(TypedDict):
+    """多智能体共享的会议桌状态结构"""
+    news_text: str
+    user_memory: str
+    indices_data: str
+    portfolio_metrics: Dict[str, Any]
+    bull_analysis: str
+    bear_analysis: str
+    final_report: str
 
 
 def fetch_global_indices() -> str:
@@ -198,106 +211,113 @@ def fetch_global_market_news() -> str:
 
 
 def generate_market_report(news_text: str, user_memory: str, indices_data: str, portfolio_metrics: Dict[str, Any]) -> str:
-    """
-    调用大模型生成盘后市场报告。
-
-    Args:
-        news_text: 多源聚合后的全球市场资讯文本。
-        user_memory: 用户持仓与偏好记忆字符串。
-        indices_data: 全球核心指数当日涨跌幅数据。
-        portfolio_metrics: 用户持仓的精准财务数据（总市值、今日盈亏等）。
-
-    Returns:
-        str: 生成的 Markdown 格式报告。
-    """
+    """基于 LangGraph 的多智能体研报辩论引擎"""
     dashscope_key: str = os.getenv("DASHSCOPE_API_KEY", "")
-
     if not dashscope_key:
         raise ValueError("DASHSCOPE_API_KEY 未配置")
 
-    system_prompt: str = """
-你是一位顶级的全球宏观策略分析师、私人财富管家与极其严苛的风控专家。请根据传入的【200 条全球市场宏观资讯】、【今日核心指数涨跌幅数据】、【用户精准财务数据】和用户的【个人持仓记忆】，生成一份具备极高专业度的盘后研报。
-
-你的回复必须严格采用 Markdown 格式，并强制包含以下三大核心模块：
-
-### 1. 🌍 全球宏观与三大市场复盘
-- 从海量资讯中，分别提炼出 A 股、港股、美股 的绝对核心事件与盘面主线逻辑。
-- **请结合提供的【今日核心指数涨跌幅数据】，对三大市场的盘面情绪进行定量与定性结合的精准复盘。**
-- 缺失特定市场重大新闻时可一笔带过，切忌废话。
-
-### 2. 💰 专属市值与盈亏归因分析（核心模块）
-🚨【格式强制红线】：
-你必须在这一节的开头，**一字不差、原封不动**地输出系统提供给你的【精准财务明细表格】。
-绝对禁止你自行修改表格里的任何一个数字或排版！
-在完整输出表格后，你再根据表格中的亏损/盈利重灾区，结合今日宏观新闻，输出一段深刻的盈亏归因分析文字。
-
-**强制约束 - 你必须严格执行以下三项分析任务：**
-
-1. **数值播报（强制要求）**：必须在本模块段落开头，使用醒目格式（如加粗或引用块）标出系统传入的【精准总市值】和【累计总盈亏】数值。
-
-2. **盈亏归因分析（核心深度分析）**：
-   - 你必须结合今日的【全球市场资讯】和【核心指数涨跌】，深度剖析用户当前的【累计盈亏】状况及持仓集中度风险。
-   - **归因模板强制示例**："结合今日资讯，分析用户当前的【累计盈亏】状况及持仓集中度风险，并指出今日新闻对用户核心重仓股的影响"。
-   - 你必须逐条追踪用户重仓板块/个股，将其与今日资讯进行因果关联，指出今日新闻对用户核心重仓股的影响。
-   - 如果累计盈利，需说明是哪个赛道或个股贡献了主要收益；如果累计亏损，需指出是哪个持仓拖累了整体表现。
-
- 3. **资产健康度体检与调仓建议**：
-    - 根据今日宏观情绪和资讯风向，评估用户当前的持仓权重分布是否合理。
-    - 如果检测到某单一板块风险暴露过高（例如：仓位过度集中于今日大跌的行业），必须给出明确的调仓优化建议（如："建议您考虑将 XX 板块仓位从 X% 降至 X%，以分散单一赛道风险"）。
-    - 如果持仓结构健康，也需明确输出"✅ 您的持仓权重分布合理，风险分散度良好"。
-
- 4. **防幻觉绝对红线（Ticker Matching Guardrail）**：
-     在进行个股归因分析时，你必须严格对照【个人持仓与偏好记忆】中记录的中文公司名称，将标的代码（如 600519、AAPL 等）与真实公司精准映射！
-     **绝对禁止张冠李戴！绝对禁止将毫不相干的新闻强加于持仓标的之上！** 如果今日宏观资讯中确实没有该公司的相关新闻，请直接说明"今日暂无重大专项消息影响"，严禁瞎编乱造！
-
-### 3. ⚠️ 专属风控与黑天鹅预警 (核心重点)
-- 强制扮演极度悲观的风控官，从资讯中嗅探可能引发市场剧烈波动的潜在风险。
-- **宏观防线**：重点扫描美联储货币政策表态突变、地缘政治摩擦、核心经济数据爆雷等全局性黑天鹅。
-- **动态赛道雷达（核心机制）**：必须先深度剖析用户的【个人持仓记忆】，推导出用户当前持仓标的所属的**核心行业与产业链**。然后，在海量资讯中，精准锁定并提取针对这些"特定持仓赛道"的负面异动、政策监管打压或供应链断裂等风险。
-- **高亮要求**：一旦发现上述风险，必须使用醒目的加粗和警示符号（如 ❗ 或 🚨）进行高亮。如果当日未监测到明显风险，也必须明确输出"✅ 我们的专属风控雷达今日未发现针对您持仓赛道的重大异动与宏观风险"。
-
-🚨【排版强制红线】：
-为了确保邮件 HTML 渲染正常，当你使用短横线 `- ` 输出列表项，或者输出表格时，**在列表或表格的上方，必须强制空出一行（即敲击两次回车）**。严禁将列表项与上一段文字紧贴在一起！
-"""
-
-    total_market_value: float = portfolio_metrics.get("total_market_value", 0.0)
-    total_pnl: float = portfolio_metrics.get("total_pnl", 0.0)
-    total_pnl_percent: float = portfolio_metrics.get("total_pnl_percent", 0.0)
-
-    user_prompt: str = f"""
-【今日核心指数涨跌幅数据】
-{indices_data}
-
-【全球市场资讯】
-{news_text}
-
-【个人持仓与偏好记忆】
-{user_memory}
-
-【精准财务数据 - 持仓明细对账单】
-{portfolio_metrics.get("markdown_report", "暂无明细数据")}
-
-请生成今日全球盘后报告：
-"""
-
-    llm: ChatOpenAI = ChatOpenAI(
+    llm = ChatOpenAI(
         model="qwen3.5-plus",
         base_url="https://coding.dashscope.aliyuncs.com/v1",
-        temperature=0,
-        timeout=120,  # 生产环境：长文本推理需要充足时间 (200 条资讯 + 跨市场分析)
+        temperature=0.7, 
+        timeout=120,
+        max_retries=3,
+        api_key=SecretStr(dashscope_key),
+    )
+    
+    pm_llm = ChatOpenAI(
+        model="qwen3.5-plus",
+        base_url="https://coding.dashscope.aliyuncs.com/v1",
+        temperature=0.1, 
+        timeout=120,
         max_retries=3,
         api_key=SecretStr(dashscope_key),
     )
 
-    response = llm.invoke(
-        [
-            ("system", system_prompt),
-            ("human", user_prompt),
-        ]
-    )
+    def bull_node(state: ReportState):
+        console.print("[bold green]🐂 [Agent 1] 激进策略师正在挖掘利好与翻倍逻辑...[/bold green]")
+        prompt = ChatPromptTemplate.from_template(
+            "你是一位极度乐观的激进策略师（The Bull）。你的任务是从以下信息中死命挖掘利好、技术突破、翻倍逻辑和政策支持。忽略一切风险因素！\n"
+            "【今日指数】：{indices_data}\n"
+            "【全球资讯】：{news_text}\n"
+            "【用户持仓】：{user_memory}\n"
+            "请输出一份针对该用户持仓的【激进看多分析】（限 400 字以内，语气要充满激情、带点华尔街狼性的煽动性）。"
+        )
+        chain = prompt | llm
+        res = chain.invoke(state)
+        return {"bull_analysis": res.content}
 
-    content: str = response.content if isinstance(response.content, str) else str(response.content)
-    return content
+    def bear_node(state: ReportState):
+        console.print("[bold red]🐻 [Agent 2] 首席风控官正在嗅探黑天鹅与危机...[/bold red]")
+        prompt = ChatPromptTemplate.from_template(
+            "你是一位极度悲观、甚至有被迫害妄想症的首席风控官（The Bear）。你的任务是从以下信息中专门挖掘地缘政治、泡沫、供应链断裂等一切可能导致用户亏钱的隐患。对利好视而不见！\n"
+            "【今日指数】：{indices_data}\n"
+            "【全球资讯】：{news_text}\n"
+            "【用户持仓】：{user_memory}\n"
+            "请输出一份针对该用户持仓的【极度看空与风险警告】（限 400 字以内，语气要极其严厉、警惕）。"
+        )
+        chain = prompt | llm
+        res = chain.invoke(state)
+        return {"bear_analysis": res.content}
+
+    def pm_node(state: ReportState):
+        console.print("[bold magenta]👨‍⚖️ [Agent 3] 投资总监正在进行多空对决裁决与最终排版...[/bold magenta]")
+        system_prompt = """你是一位顶级的华尔街投资总监（PM）。你需要审视激进策略师（Bull）和首席风控官（Bear）的辩论，结合用户的【精准财务明细】，输出最终的盘后研报。
+
+你的回复必须严格采用 Markdown 格式，并强制包含以下三大核心模块：
+
+### 1. 🌍 宏观与多空博弈复盘
+- 综合今日核心指数表现。
+- 提炼 Bull 和 Bear 的核心观点冲突，并给出你作为投资总监的最终客观评判（当前市场是该贪婪还是该恐惧？）。
+
+### 2. 💰 专属市值与盈亏归因分析（核心模块）
+🚨【格式强制红线】：
+你必须在这一节的开头，**一字不差、原封不动**地输出系统提供给你的【精准财务明细表格】。绝对禁止修改表格里的任何一个数字或排版！
+表格之后，结合多空双方的观点，对用户的【累计盈亏】进行深度归因。
+
+### 3. ⚠️ 最终决断与调仓建议
+- 明确指出当前持仓最大的风险敞口在哪里。
+- 给出明确的、可操作的调仓建议（如：保持观望、降低某赛道仓位、逢低建仓等）。
+
+🚨【排版强制红线】：
+当你使用短横线 `- ` 输出列表项，或者输出表格时，**在列表或表格的上方，必须强制空出一行（即敲击两次回车）**。严禁将列表项与上一段文字紧贴在一起！
+"""
+        user_prompt = f"""
+【今日核心指数】：{state['indices_data']}
+【激进策略师观点】：\n{state['bull_analysis']}
+【首席风控官观点】：\n{state['bear_analysis']}
+【精准财务数据 - 持仓明细对账单】：\n{state['portfolio_metrics'].get("markdown_report", "暂无明细数据")}
+
+请生成今日全球盘后报告：
+"""
+        res = pm_llm.invoke([("system", system_prompt), ("human", user_prompt)])
+        return {"final_report": res.content}
+
+    workflow = StateGraph(ReportState)
+    
+    workflow.add_node("bull", bull_node)
+    workflow.add_node("bear", bear_node)
+    workflow.add_node("pm", pm_node)
+    
+    workflow.add_edge(START, "bull")
+    workflow.add_edge("bull", "bear")
+    workflow.add_edge("bear", "pm")
+    workflow.add_edge("pm", END)
+    
+    app = workflow.compile()
+    
+    console.print("\n[bold cyan]🧠 启动华尔街虚拟交易室 (Multi-Agent Debate) ...[/bold cyan]")
+    final_state = app.invoke({
+        "news_text": news_text,
+        "user_memory": user_memory,
+        "indices_data": indices_data,
+        "portfolio_metrics": portfolio_metrics,
+        "bull_analysis": "",
+        "bear_analysis": "",
+        "final_report": ""
+    })
+    
+    return final_state["final_report"]
 
 
 def job_routine() -> None:

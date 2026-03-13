@@ -49,3 +49,6 @@ pytest-cov~=4.1.0                  # 代码覆盖率统计插件
 
 # 9. 🤖 Telegram 机器人 (Telegram Bot API)
 python-telegram-bot~=22.6          # Telegram Bot API (tg_main.py 依赖)
+
+# --- 新增：多智能体图计算引擎 ---
+langgraph~=0.2.0
