@@ -849,7 +849,7 @@ async def broadcast_to_telegram(text: str):
                         if not re.match(r'^!\[.*?\]\(.*?\)$', prev_chunk):
                             raw_caption = prev_chunk
                             
-                    if img_path.exists():
+                    if img_path.exists() and img_path.stat().st_size > 0:
                         with open(img_path, 'rb') as photo:
                             if raw_caption:
                                 html_caption = translate_to_telegram_html(raw_caption)
@@ -866,6 +866,8 @@ async def broadcast_to_telegram(text: str):
                                 is_consumed[i-1] = True
                             else:
                                 await bot.send_photo(chat_id=user_id, photo=photo)
+                    else:
+                        logger.warning(f"图片文件不存在或为空：{img_path}")
                     await asyncio.sleep(0.3) # 防封锁限流
                     
                 else:
