@@ -539,7 +539,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    🗂️ 移动端知识投喂中枢：拦截用户上传的文件，存入知识库并触发向量解析
+    🗂️ 移动端知识投喂中枢：拦截用户上传的文件，存入知识库并触发向量解析 (增强防御与计时版)
     """
     user = update.effective_user
     message = update.message
@@ -548,54 +548,62 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = user.id
     if not _is_authorized_user(user_id):
-        logger.warning(f"⛔ 未授权的文件上传尝试 | User ID: {user_id}")
         return
 
     doc = message.document
     file_name = doc.file_name or f"upload_{int(time.time())}.txt"
+    file_size_mb = doc.file_size / (1024 * 1024) if doc.file_size else 0
 
-    # 1. 拦截非法格式 (只允许 PDF, MD, TXT, CSV)
+    # 🚨 1. 物理防线：Telegram 标准 Bot API 硬性限制下载 20MB 以内的文件
+    if file_size_mb > 20.0:
+        await message.reply_text(f"⚠️ 系统熔断：文件高达 {file_size_mb:.1f}MB。受限于 Telegram 官方网关物理限制，系统最多只能接收 20MB 以内的研报。请压缩后重试。")
+        return
+
+    # 2. 格式拦截
     allowed_exts = {'.pdf', '.md', '.txt', '.csv'}
     ext = os.path.splitext(file_name)[1].lower()
     if ext not in allowed_exts:
-        await message.reply_text(f"⚠️ 系统拒绝接收：不支持的文件格式 {ext}。目前仅支持 PDF, MD, TXT, CSV。")
+        await message.reply_text(f"⚠️ 格式拒绝：暂不支持 {ext} 格式进行向量化。")
         return
 
-    # 2. 状态反馈：开始下载
+    # 3. 初始反馈：缓解下载焦虑
     status_msg = await message.reply_text(
-        f"⏳ <b>正在接收高密文件：</b> {file_name}...\n<blockquote><i>正在进行物理层传输与安全校验...</i></blockquote>", 
+        f"⏳ <b>正在从 Telegram 节点拉取文件：</b> {file_name} ({file_size_mb:.1f}MB)\n<blockquote><i>受限于跨国节点带宽，下载可能需要数秒至十几秒...</i></blockquote>", 
         parse_mode=ParseMode.HTML
     )
 
     try:
-        # 获取 Telegram 服务器上的真实文件对象
-        tg_file = await context.bot.get_file(doc.file_id)
+        start_dl_time = time.time()
         
-        # 组装本地绝对路径
+        tg_file = await context.bot.get_file(doc.file_id)
         save_path = (KB_DIR / file_name).resolve()
         
-        # 🌟 核心防御：防止通过恶意文件名 (如 ../../etc/passwd) 进行目录穿越攻击
         if not save_path.is_relative_to(KB_DIR):
-            await status_msg.edit_text("❌ 安全拦截：非法的文件名导致越权风险，已销毁。")
+            await status_msg.edit_text("❌ 安全拦截：非法的文件名，已销毁。")
             return
 
-        # 3. 物理落盘 (存入 knowledge_base 目录)
+        # 物理下载
         await tg_file.download_to_drive(custom_path=save_path)
-        
-        # 删除下载提示
-        await status_msg.delete()
+        dl_cost = time.time() - start_dl_time
 
-        # 4. 🌟 核心连招：生成隐形 Prompt，强行唤醒 Agent 的 RAG 引擎去读这份文件！
-        rag_prompt = f"我已经把一份名为 '{file_name}' 的文件放进了知识库。请调用 analyze_local_document 工具，仔细阅读这篇文档，并给我一份结构化的核心内容摘要。"
-        
-        # 在界面上回显幽灵输入，极客感拉满
-        await message.reply_text(
-            f"<blockquote><b>⚡ 知识黑洞吞噬成功：</b>\n<i>已将 {file_name} 挂载至知识库。\n正在触发自动切片、向量解析与 RAG 深度阅读...</i></blockquote>", 
+        # 4. 🌟 UX 状态瞬间跳变：明确告知用户下载已完成，现在是算力消耗时间！
+        await status_msg.edit_text(
+            f"<blockquote><b>⚡ 物理传输完毕 (耗时 {dl_cost:.1f}s)</b></blockquote>\n"
+            f"<i>已成功挂载至知识库：{file_name}。\n"
+            f"🧠 正在唤醒阿里云 Embedding 引擎进行高维张量切片与 RAG 深度阅读，请稍候...</i>", 
             parse_mode=ParseMode.HTML
         )
+
+        rag_prompt = f"我已经把一份名为 '{file_name}' 的文件放进了知识库。请调用 analyze_local_document 工具，仔细阅读这篇文档，并给我一份结构化的核心内容摘要。"
         
-        # 复用咱们写好的核心执行流！
+        # 将提示消息传给后续流以便任务完成后删除
         await execute_agent_task(rag_prompt, message, user_id, context, update)
+        
+        # 任务完毕后清理掉这条冗长的进度消息
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
 
     except Exception as e:
         logger.error(f"文件接收与解析失败：{e}")
