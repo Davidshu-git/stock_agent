@@ -196,7 +196,8 @@ async def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
     """
     🚀 终极视觉拦截器：利用 Playwright 浏览器内核，将 Markdown 表格渲染为具有 Bloomberg 质感的 Web UI 并精准截图。
     """
-    table_pattern = re.compile(r'((?:\|.*\|\n)+\|?(?:[-:]+[-| :]*)\|?\n(?:\|.*\|\n?)+)')
+    # 放宽对分割线空格的容忍度，完美适配 | :--- | 格式
+    table_pattern = re.compile(r'((?:\|.*\|\n)+[ \t]*\|?[ \t]*[-:]+[-| :]*\|?\n(?:\|.*\|\n?)+)')
     matches = table_pattern.findall(text)
     
     if not matches:
