@@ -212,6 +212,8 @@ async def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
         background-color: transparent;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
         margin: 0; padding: 20px;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
     }
     #capture_area {
         display: inline-block; background-color: var(--bg); padding: 16px;
@@ -230,7 +232,8 @@ async def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
     # 启动极其轻量的无头浏览器
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu'])
-        page = await browser.new_page()
+        # 🌟 核心高分屏魔法：开启 3 倍设备像素比 (相当于苹果 Retina 视网膜屏物理超采样)
+        page = await browser.new_page(device_scale_factor=3)
         
         for idx, md_table in enumerate(matches):
             try:
