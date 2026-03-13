@@ -22,6 +22,7 @@ services:
       - ./agent_workspace:/app/agent_workspace
       - ./knowledge_base:/app/knowledge_base
       - ./embeddings:/app/embeddings
+      - ./jobs:/app/jobs
       - ./.env:/app/.env
     depends_on:
       - omnistock-agent

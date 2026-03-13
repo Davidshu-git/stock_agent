@@ -88,14 +88,15 @@ async def send_dashboard(message_obj: Message, first_name: str):
 
 
 async def post_init(application: Application):
-    """🤖 生命周期钩子：系统启动时自动向 Telegram 服务器注册左下角原生菜单"""
-    commands = [
-        BotCommand("start", "🏠 唤醒全息主控台"),
+    """🤖 机器人启动时的钩子：强行改写客户端左下角的横线菜单"""
+    await application.bot.set_my_commands([
+        BotCommand("start", "🏠 唤醒主控台"),
+        BotCommand("status", "⏱️ 查询任务进度"),
         BotCommand("portfolio", "💰 精确核算总市值与持仓"),
         BotCommand("report", "📊 立即生成今日盘后研报"),
-    ]
-    await application.bot.set_my_commands(commands)
-    logger.info("✅ Telegram 原生汉堡菜单 (Bot Menu) 挂载成功！")
+        BotCommand("kb", "📚 查看知识库文件"),
+    ])
+    logger.info("✅ 左下角全局菜单 (Bot Commands) 注入成功！")
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -145,6 +146,19 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await message.reply_text(f"<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>生成盘后研报</i></blockquote>", parse_mode=ParseMode.HTML)
     await execute_agent_task("立刻触发生成今日的盘后报告。", message, user.id, context, update)
+
+
+async def kb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """快捷路由：查看知识库文件列表"""
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
+        return
+    if not _is_authorized_user(user.id):
+        return
+    
+    await message.reply_text(f"<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>查看知识库文件</i></blockquote>", parse_mode=ParseMode.HTML)
+    await execute_agent_task("列出知识库里现在有哪些文件可以读取？", message, user.id, context, update)
 
 class AsyncTelegramCallbackHandler(AsyncCallbackHandler):
     """拦截 Agent 的异步执行流，实时动态更新到 Telegram 屏幕上"""
@@ -510,16 +524,91 @@ async def execute_agent_task(
                     # 微小延迟，锁死文章阅读流顺序
                     await asyncio.sleep(0.2)
         
-        # 🌟 闭环终点：任务完成后附加返回按钮
-        home_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 唤醒主控台", callback_data="cmd_home")]])
-        await message.reply_text("✨ 当前任务流执行完毕。等待下一步指令...", reply_markup=home_btn)
+        # 任务完成，静默结束
         
     except Exception as e:
         logger.error(f"[execute_agent_task] 处理失败：{e}")
-        # 🌟 确保即使出错也要删除等待提示，避免残留
+        # 确保即使出错也要删除等待提示，避免残留
         await status_msg.delete()
-        home_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 唤醒主控台", callback_data="cmd_home")]])
-        await message.reply_text(f"⚠️ 系统熔断：{str(e)}", reply_markup=home_btn)
+        await message.reply_text(f"⚠️ 系统熔断：{str(e)}")
+
+
+def _read_job_status_sync(job_id: str) -> str:
+    """⚡ 脊髓反射：直接读取本地 JSON，零延迟返回，绝对不调用大模型"""
+    import json
+    from pathlib import Path
+    try:
+        status_file = Path(f"./jobs/status/{job_id}.json").resolve()
+        if not status_file.exists():
+            return f"❌ 未找到任务 <code>{job_id}</code> 的状态文件。"
+        
+        with open(status_file, 'r', encoding='utf-8') as f:
+            status = json.load(f)
+            
+        status_map = {
+            "pending": "⏳ 等待分配资源...",
+            "running": "🔄 华尔街虚拟交易室正在激烈辩论与计算中...",
+            "completed": "✅ 研报已生成并推送到您的屏幕！",
+            "failed": "❌ 任务执行崩溃"
+        }
+        
+        current_status = status_map.get(status.get('status'), '未知状态')
+        
+        result = (
+            f"<blockquote><b>📊 任务雷达跟踪：{job_id}</b></blockquote>\n"
+            f"<b>当前状态：</b>{current_status}\n"
+            f"<b>创建时间：</b><code>{status.get('created_at', 'N/A')}</code>\n"
+        )
+        if status.get('started_at'):
+            result += f"<b>启动时间：</b><code>{status.get('started_at')}</code>\n"
+        if status.get('completed_at'):
+            result += f"<b>完成时间：</b><code>{status.get('completed_at')}</code>\n"
+        if status.get('error'):
+            result += f"<b>异常抛出：</b><code>{status.get('error')}</code>\n"
+            
+        return result
+    except Exception as e:
+        return f"❌ 状态读取物理层异常：{e}"
+
+
+def _get_latest_job_id() -> str:
+    """⚡ 硬盘级嗅探：扫描本地状态目录，获取最新提交的任务 ID"""
+    from pathlib import Path
+    import os
+    
+    status_dir = Path("./jobs/status").resolve()
+    if not status_dir.exists():
+        return ""
+    
+    files = list(status_dir.glob("*.json"))
+    if not files:
+        return ""
+    
+    # 按照文件的最后修改时间降序排序，提取最新的那个文件
+    latest_file = max(files, key=os.path.getmtime)
+    return latest_file.stem  # 返回去掉后缀的纯 job_id
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理来自左下角菜单的 /status 快捷指令"""
+    try:
+        latest_job_id = _get_latest_job_id()
+        if not latest_job_id:
+            await update.message.reply_text("📭 当前系统没有任何后台任务记录。")
+            return
+            
+        status_text = _read_job_status_sync(latest_job_id)
+        
+        # 我们在这个状态卡片上保留一个刷新按钮，方便用户直接在这个气泡上反复点
+        # 使用特殊标记 latest，每次点击都会重新获取最新 job_id
+        refresh_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 刷新此任务", callback_data="check_job:latest")]
+        ])
+        await update.message.reply_text(status_text, parse_mode=ParseMode.HTML, reply_markup=refresh_keyboard)
+    except Exception as e:
+        logger.error(f"/status 命令执行失败：{e}")
+        if update.message:
+            await update.message.reply_text("⚠️ 网络暂时不可用，请稍后重试。")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -649,13 +738,39 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.warning("按钮指令数据为空")
         return
     
-    # 🌟 1. 状态物理销毁：立刻清除被点击的面板按钮，彻底防止二次点击和重放
-    try:
-        await query.edit_message_reply_markup(reply_markup=None)
-    except Exception as e:
-        logger.warning(f"清除按钮失败：{e}")
+    # 🌟 1. 状态物理销毁：大部分按钮点击后立刻清除防止重放。但刷新按钮需要保留！
+    if not cmd.startswith("check_job:"):
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception as e:
+            logger.warning(f"清除按钮失败：{e}")
 
-    # 🌟 2. 闭环路由：拦截返回主控台的指令
+    # 🌟 2. 旁路直通网关 (Spinal Reflex)：拦截刷新指令，0.1 秒极速响应，绕过大模型！
+    if cmd.startswith("check_job:"):
+        job_id = cmd.split(":")[1]
+        
+        # 如果是 latest 标记，每次点击都重新获取最新 job_id
+        if job_id == "latest":
+            job_id = _get_latest_job_id()
+            if not job_id:
+                await query.message.edit_text("📭 当前系统没有任何后台任务记录。", parse_mode=ParseMode.HTML)
+                return
+        
+        status_text = _read_job_status_sync(job_id)
+        
+        # 重新生成带刷新功能的面板
+        refresh_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data=cmd)],
+            [InlineKeyboardButton("🏠 唤醒主控台", callback_data="cmd_home")]
+        ])
+        
+        try:
+            await query.message.edit_text(status_text, parse_mode=ParseMode.HTML, reply_markup=refresh_keyboard)
+        except Exception:
+            pass # 忽略 Telegram "内容未发生改变 (Message is not modified)" 的冗余报错
+        return
+
+    # 🌟 3. 闭环路由：拦截返回主控台的指令
     if cmd == "cmd_home":
         try:
             if query.message and isinstance(query.message, Message):
@@ -773,6 +888,18 @@ async def broadcast_to_telegram(text: str):
             logger.error(f"向用户 {user_id} 推送失败：{e}")
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """全局错误处理器：捕获所有未处理的异常"""
+    logger.error("未捕获的异常：", exc_info=context.error)
+    
+    # 网络错误时静默处理，避免刷屏
+    if isinstance(context.error, Exception):
+        error_type = type(context.error).__name__
+        if "ConnectError" in error_type or "NetworkError" in error_type:
+            logger.warning("检测到网络错误，可能是临时 DNS 解析失败或 Telegram 服务器不可达")
+            return
+
+
 def main():
     """启动机器人"""
     logger.info("启动 OmniStock Telegram Bot...")
@@ -788,11 +915,16 @@ def main():
         .post_init(post_init)    # 👈 核心：在此处挂载生命周期钩子
         .build()
     )
+    
+    # 注册全局错误处理器
+    application.add_error_handler(error_handler)
 
     # 注册处理器
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("portfolio", portfolio_command))
     application.add_handler(CommandHandler("report", report_command))
+    application.add_handler(CommandHandler("kb", kb_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CallbackQueryHandler(handle_button_click))
