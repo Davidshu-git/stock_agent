@@ -406,34 +406,43 @@ def generate_kline_chart(ticker: str, save_dir: Path) -> Dict[str, Any]:
     chart_filename = f"{safe_name}_30d_chart.png"
     chart_path = (save_dir / chart_filename).resolve()
     
-    # 🌟 核心 UI 升级：定制极客暗黑风高清 K 线图
-    # 1. 设置涨跌颜色 (中国习惯：红涨绿跌，使用现代扁平色系)
+    # 🌟 终极 UI 升级：TradingView 旗舰暗黑风格 (无边框悬浮质感)
+    # 1. 极致色彩：采用 TradingView 官方经典的翠绿与猩红
     mc = mpf.make_marketcolors(
-        up='#ef5350', down='#26a69a',
-        edge='inherit', wick='inherit', volume='in'
+        up='#089981',             # TV 经典翠绿
+        down='#f23645',           # TV 经典猩红
+        edge='inherit',           # 边框与主体同色，消除发虚感
+        wick='inherit',           # 影线与主体同色
+        volume='in'               # 成交量颜色跟随 K 线涨跌
     )
     
-    # 2. 设置整体暗黑主题风格
+    # 2. 旗舰质感：去边框化、深邃蓝灰背景、极度弱化网格
     s = mpf.make_mpf_style(
         marketcolors=mc,
-        figcolor='#121212',       # 图片边缘背景色：极深灰
-        facecolor='#1c1c1c',      # 坐标系内背景色：深灰
-        edgecolor='#444444',      # 边框颜色
-        gridcolor='#2a2a2a',      # 网格线颜色：隐约可见的暗色
-        gridstyle='--',           # 网格线型
+        figcolor='#131722',       # TV 经典外框背景色（深邃蓝灰）
+        facecolor='#131722',      # 图表内背景色（无缝融合）
+        edgecolor='#131722',      # 隐藏坐标系边框，打造悬浮感
+        gridcolor='#1e222d',      # 极度弱化的网格线
+        gridstyle=':',            # 点状网格，绝不喧宾夺主
         rc={
-            'text.color': '#eeeeee', 
-            'axes.labelcolor': '#eeeeee', 
-            'xtick.color': '#eeeeee', 
-            'ytick.color': '#eeeeee',
-            'font.size': 10       # 稍微调大字体，防止在高 DPI 下太小
+            'text.color': '#d1d4dc',            # 柔和的银灰色文字
+            'axes.labelcolor': '#d1d4dc',
+            'xtick.color': '#d1d4dc',
+            'ytick.color': '#d1d4dc',
+            'axes.spines.top': False,           # 🔪 物理切除顶部边框
+            'axes.spines.right': False,         # 🔪 物理切除右侧边框
+            'axes.spines.left': False,          # 🔪 物理切除左侧边框
+            'axes.spines.bottom': False,        # 🔪 物理切除底部边框
+            'font.size': 10,
+            'font.weight': 'bold',              # 字体加粗更具科技感
+            'lines.linewidth': 1.5              # 稍微加粗均线，增加发光感
         }
     )
 
-    # 3. 设置高分辨率与自适应边缘裁切
-    save_dict = dict(fname=str(chart_path), dpi=300, bbox_inches='tight')
+    # 3. 视网膜级输出 (400 DPI) 与自适应留白
+    save_dict = dict(fname=str(chart_path), dpi=400, bbox_inches='tight', pad_inches=0.2)
 
-    # 4. 执行渲染
+    # 4. 宽屏渲染，注入定制的霓虹色均线
     mpf.plot(
         hist, 
         type='candle', 
@@ -441,7 +450,8 @@ def generate_kline_chart(ticker: str, save_dir: Path) -> Dict[str, Any]:
         style=s, 
         title=f"\n{formatted_ticker} 30-Day Trend", 
         mav=(5, 10),
-        figsize=(10, 6),          # 调整画布长宽比，让走势更舒展
+        mavcolors=['#c481ec', '#2962ff'], # 🌟 视觉点睛：霓虹紫 + 电光蓝 均线
+        figsize=(12, 6),                  # 🎬 升级为 2:1 的宽屏影院比例，K 线更舒展
         savefig=save_dict
     )
     
