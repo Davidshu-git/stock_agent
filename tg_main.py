@@ -329,9 +329,9 @@ def translate_to_telegram_html(text: str) -> str:
     # 处理一级列表 (顶格的 - 或 *) -> 转换为醒目的蓝色主节点
     text = re.sub(r'^[-*]\s+', r'🔹 ', text, flags=re.MULTILINE)
     
-    # 7. 🌟 渲染水平分割线 (Telegram 不支持 <hr> 标签，使用粗体全角制表符模拟终端分割线)
-    # 匹配单独一行的 ---, ***, 或 ___
-    text = re.sub(r'^[-*_]{3,}\s*$', r'<b>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</b>', text, flags=re.MULTILINE)
+    # 7. 🌟 静默擦除水平分割线 (Telegram 不支持 <hr> 标签)
+    # 匹配单独一行的 ---, ***, 或 ___ 并直接删除
+    text = re.sub(r'^[-*_]{3,}\s*\n?', '', text, flags=re.MULTILINE)
     
     return text
 
