@@ -62,9 +62,31 @@ def _is_authorized_user(user_id: int) -> bool:
         return True
     return user_id in ALLOWED_USER_IDS
 
+async def send_dashboard(message_obj: Message, first_name: str):
+    """
+    下发全息操控面板 (解耦复用)
+    
+    Args:
+        message_obj: Telegram Message 对象，用于回复
+        first_name: 用户名字
+    """
+    keyboard = [
+        [InlineKeyboardButton("💰 精确核算总市值与持仓明细", callback_data="cmd_portfolio")],
+        [InlineKeyboardButton("📊 立刻触发生成今日盘后研报", callback_data="cmd_daily_report")],
+        [InlineKeyboardButton("🌍 查看知识库当前可用文件集", callback_data="cmd_kb_list")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    welcome_text = (
+        f"<blockquote><b>🚀 OmniStock 量化中台已挂载</b></blockquote>\n"
+        f"指挥官 <b>{first_name}</b>，连接安全。\n\n"
+        f"<i>您可以直接输入自然语言下达指令，或通过下方战术面板执行核心宏任务：</i>"
+    )
+    await message_obj.reply_text(welcome_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    生成带有 Inline Keyboard 的全息操控面板
+    处理 /start 命令，调用面板生成器
     
     Args:
         update: Telegram Update 对象
@@ -73,7 +95,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.message
     
-    # 安全检查：确保 user 和 message 存在
     if user is None or message is None:
         logger.warning("收到无效的 /start 请求（缺少用户或消息信息）")
         return
@@ -82,21 +103,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning(f"⛔ 未授权访问尝试 /start 命令 | User ID: {user.id}")
         await message.reply_text("⛔ 未授权访问")
         return
-    
-    # 构建高颜值快捷按键矩阵
-    keyboard = [
-        [InlineKeyboardButton("💰 精确核算总市值与持仓明细", callback_data="cmd_portfolio")],
-        [InlineKeyboardButton("📊 立刻触发生成今日盘后研报", callback_data="cmd_daily_report")],
-        [InlineKeyboardButton("🌍 查看知识库当前可用文件集", callback_data="cmd_kb_list")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    welcome_text = (
-        f"<blockquote><b>🚀 OmniStock 量化中台已挂载</b></blockquote>\n"
-        f"指挥官 <b>{user.first_name}</b>，连接安全。\n\n"
-        f"<i>您可以直接输入自然语言下达指令，或通过下方战术面板执行核心宏任务：</i>"
-    )
-    await message.reply_text(welcome_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        
+    await send_dashboard(message, user.first_name)
 
 async def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
     """
@@ -388,11 +396,16 @@ async def execute_agent_task(
                     # 微小延迟，锁死文章阅读流顺序
                     await asyncio.sleep(0.2)
         
+        # 🌟 闭环终点：任务完成后附加返回按钮
+        home_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 唤醒主控台", callback_data="cmd_home")]])
+        await message.reply_text("✨ 当前任务流执行完毕。等待下一步指令...", reply_markup=home_btn)
+        
     except Exception as e:
         logger.error(f"[execute_agent_task] 处理失败：{e}")
         # 🌟 确保即使出错也要删除等待提示，避免残留
         await status_msg.delete()
-        await message.reply_text(f"⚠️ 系统熔断：{str(e)}")
+        home_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 唤醒主控台", callback_data="cmd_home")]])
+        await message.reply_text(f"⚠️ 系统熔断：{str(e)}", reply_markup=home_btn)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -448,7 +461,24 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
     if cmd is None:
         logger.warning("按钮指令数据为空")
         return
-        
+    
+    # 🌟 1. 状态物理销毁：立刻清除被点击的面板按钮，彻底防止二次点击和重放
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as e:
+        logger.warning(f"清除按钮失败：{e}")
+
+    # 🌟 2. 闭环路由：拦截返回主控台的指令
+    if cmd == "cmd_home":
+        try:
+            if query.message and isinstance(query.message, Message):
+                await query.message.delete()
+        except Exception:
+            pass
+        if query.message and isinstance(query.message, Message):
+            await send_dashboard(query.message, query.from_user.first_name)
+        return
+
     user_msg = ""
     
     # 路由表：将隐藏指令映射为精确的工程 Prompt
