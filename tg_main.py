@@ -314,12 +314,20 @@ def translate_to_telegram_html(text: str) -> str:
     text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text)
     
     # 4. 🌟 核心 UI 升级：标题降级为带前缀的引用块 <blockquote>
+    # 拦截 4 级及以上标题（终极兜底，渲染为加粗子菱形，不再嵌套 blockquote）
+    text = re.sub(r'^#{4,}\s+(.*)', r'<b>◈ \1</b>', text, flags=re.MULTILINE)
     text = re.sub(r'^###\s+(.*)', r'<blockquote><b>■ \1</b></blockquote>', text, flags=re.MULTILINE)
     text = re.sub(r'^##\s+(.*)', r'<blockquote><b>● \1</b></blockquote>', text, flags=re.MULTILINE)
     text = re.sub(r'^#\s+(.*)', r'<blockquote><b>◆ \1</b></blockquote>', text, flags=re.MULTILINE)
     
     # 5. 渲染超链接
     text = re.sub(r'\[(.*?)\]\((.*?)\)', r'<a href="\2">\1</a>', text)
+    
+    # 6. 🌟 列表语法降级与美化 (Telegram HTML 不支持 ul/li)
+    # 处理二级缩进列表 (匹配 1 个以上空格或制表符开头的 - 或 *) -> 转换为终端树状节点
+    text = re.sub(r'^([ \t]{1,})[-*]\s+', r'\1└─ ▫️ ', text, flags=re.MULTILINE)
+    # 处理一级列表 (顶格的 - 或 *) -> 转换为醒目的蓝色主节点
+    text = re.sub(r'^[-*]\s+', r'🔹 ', text, flags=re.MULTILINE)
     
     return text
 
