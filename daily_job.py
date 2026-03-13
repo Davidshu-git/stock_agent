@@ -363,6 +363,19 @@ def job_routine() -> None:
     except Exception as e:
         console.print(f"[bold red]❌ [邮件推送] 发送失败：{type(e).__name__} - {str(e)}[/bold red]")
 
+    # 🌟 新增：Telegram 独立推送链路
+    try:
+        import asyncio
+        from tg_main import broadcast_to_telegram
+        console.print("[bold yellow]🚀 [Telegram 推送] 正在调用渲染引擎下发移动端...[/bold yellow]")
+        
+        # 启动 asyncio 事件循环，强行拉起跨进程的推送逻辑
+        asyncio.run(broadcast_to_telegram(report_content))
+        
+        console.print("[bold green]📱 [Telegram 推送] 研报已成功渲染并推送到手机！[/bold green]")
+    except Exception as e:
+        console.print(f"[bold red]❌ [Telegram 推送] 链路崩溃：{e}[/bold red]")
+
     console.print(f"[bold cyan]✅ [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 盘后调度任务执行完毕[/bold cyan]\n")
 
 

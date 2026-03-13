@@ -4,7 +4,7 @@ import time
 import logging
 import asyncio
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message, BotCommand, Bot
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from dotenv import load_dotenv
@@ -599,6 +599,90 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         # 复用核心执行流，无缝对接大模型
         await execute_agent_task(user_msg, query.message, user_id, context, update)  # type: ignore
+
+
+async def broadcast_to_telegram(text: str):
+    """
+    🌟 服务端主动推送引擎：供 daily_job 跨进程调用，复用高级图文渲染引擎下发研报
+    
+    Args:
+        text: 待发送的研报 Markdown 文本
+    """
+    if not TG_BOT_TOKEN or not ALLOWED_USER_IDS:
+        logger.warning("未配置 Telegram Token 或白名单，无法进行推送。")
+        return
+        
+    bot = Bot(token=TG_BOT_TOKEN)
+    
+    # 1. 拦截并使用 Playwright 渲染表格
+    final_text, _ = await render_markdown_table_to_image(text)
+    
+    # 2. 图文切片混排
+    chunks = re.split(r'(!\[.*?\]\(.*?\))', final_text)
+    
+    for user_id in ALLOWED_USER_IDS:
+        try:
+            # 播报报头
+            await bot.send_message(
+                chat_id=user_id, 
+                text="<blockquote><b>🔔 OmniStock 每日宏观与账户研报已送达</b></blockquote>", 
+                parse_mode=ParseMode.HTML
+            )
+            
+            # 依次发送切片
+            is_consumed = [False] * len(chunks)
+            for i, chunk in enumerate(chunks):
+                chunk = chunk.strip()
+                if not chunk: continue
+                
+                img_match = re.match(r'^!\[.*?\]\((.*?)\)$', chunk)
+                if img_match:
+                    img_filename = img_match.group(1).replace("./", "")
+                    img_path = (SANDBOX_DIR / img_filename).resolve()
+                    
+                    raw_caption = ""
+                    if i > 0 and not is_consumed[i-1]:
+                        prev_chunk = chunks[i-1].strip()
+                        if not re.match(r'^!\[.*?\]\(.*?\)$', prev_chunk):
+                            raw_caption = prev_chunk
+                            
+                    if img_path.exists():
+                        with open(img_path, 'rb') as photo:
+                            if raw_caption:
+                                html_caption = translate_to_telegram_html(raw_caption)
+                                # 降级截断处理
+                                try:
+                                    if len(html_caption) <= 1024:
+                                        await bot.send_photo(chat_id=user_id, photo=photo, caption=html_caption, parse_mode=ParseMode.HTML)
+                                    else:
+                                        await bot.send_photo(chat_id=user_id, photo=photo, caption=html_caption[:1021]+"...", parse_mode=ParseMode.HTML)
+                                        await bot.send_message(chat_id=user_id, text=html_caption[1024:], parse_mode=ParseMode.HTML)
+                                except Exception:
+                                    fallback = re.sub(r'<[^>]+>', '', html_caption)
+                                    await bot.send_photo(chat_id=user_id, photo=photo, caption=fallback[:1024])
+                                is_consumed[i-1] = True
+                            else:
+                                await bot.send_photo(chat_id=user_id, photo=photo)
+                    await asyncio.sleep(0.3) # 防封锁限流
+                    
+                else:
+                    next_is_image = (i + 1 < len(chunks) and re.match(r'^!\[.*?\]\(.*?\)$', chunks[i+1].strip()))
+                    if next_is_image: continue
+                    
+                    html_text = translate_to_telegram_html(chunk)
+                    try:
+                        await bot.send_message(chat_id=user_id, text=html_text, parse_mode=ParseMode.HTML)
+                    except Exception:
+                        fallback = re.sub(r'<[^>]+>', '', html_text)
+                        await bot.send_message(chat_id=user_id, text=fallback)
+                    await asyncio.sleep(0.3)
+                    
+            # 3. 闭环收尾：发完研报后，再次弹出主控台按钮方便交互
+            home_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 唤醒主控台", callback_data="cmd_home")]])
+            await bot.send_message(chat_id=user_id, text="✨ 今日盘后播报完毕。", reply_markup=home_btn)
+            
+        except Exception as e:
+            logger.error(f"向用户 {user_id} 推送失败：{e}")
 
 
 def main():
