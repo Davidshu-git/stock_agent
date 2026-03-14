@@ -277,6 +277,27 @@ async def kb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await execute_agent_task(user_msg, message, update.effective_user.id, context, update)
 
+
+@authorized
+async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    快捷路由：设定盯盘价格预警（引导用户）
+    
+    Args:
+        update: Telegram Update 对象
+        context: Telegram Context 对象
+    """
+    message = update.message
+    
+    text = (
+        "<blockquote><b>🔔 智能盯盘预警系统</b></blockquote>\n"
+        "您现在可以使用自然语言下发盯盘指令，AI 会自动为您解析参数并挂载到后台监控引擎。\n\n"
+        "<b>您可以直接这样对我说：</b>\n"
+        "🗣️ <i>「帮我盯着英伟达，如果跌破 100 块叫我一声。」</i>\n"
+        "🗣️ <i>「如果腾讯涨破了 350 港币，发消息提醒我减仓。」</i>"
+    )
+    await message.reply_text(text, parse_mode=ParseMode.HTML)
+
 class AsyncTelegramCallbackHandler(AsyncCallbackHandler):
     """拦截 Agent 的异步执行流，实时动态更新到 Telegram 屏幕上"""
     
@@ -1157,7 +1178,7 @@ def main():
     application.add_handler(CommandHandler("portfolio", portfolio_command))
     application.add_handler(CommandHandler("report", report_command))
     application.add_handler(CommandHandler("kb", kb_command))
-    application.add_handler(CommandHandler("alert", kb_command))
+    application.add_handler(CommandHandler("alert", alert_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CallbackQueryHandler(handle_button_click))
