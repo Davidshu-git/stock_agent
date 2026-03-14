@@ -171,18 +171,24 @@ def get_etf_price(etf_code: str, date: str = None) -> str:
 
 
 # ==========================================
-# 插件 1.5：K 线图与 30 天走势可视化
+# 插件 1：绘图引擎
 # ==========================================
 @tool
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def draw_universal_stock_chart(ticker: str) -> str:
+def draw_universal_stock_chart(ticker: str, days: int = 30) -> str:
     """
-    🌐 全球股票 30 天走势绘图引擎（支持美股、A 股、港股）。
-    当你需要为用户生成可视化图表时调用，传入代码即可。
+    🌐 全球股票走势绘图引擎（支持美股、A 股、港股，支持自定义时间跨度）。
+    
+    Args:
+        ticker: 股票代码（如 AAPL, 600519, 0700）
+        days: K 线图的时间跨度（天数）。默认 30 天。如果用户要求看'半年'请传 180，'一年'请传 365，'最近'或未指定则默认传 30。
+    
+    Returns:
+        str: 生成结果与文件路径
     """
-    chart_data = generate_kline_chart(ticker, SANDBOX_DIR)
+    chart_data = generate_kline_chart(ticker, SANDBOX_DIR, days)
     return (
-        f"✅ {chart_data['ticker']} 走势图生成完毕！文件名为：{chart_data['file_name']}。\n"
+        f"✅ {chart_data['ticker']} {days}天走势图生成完毕！文件名为：{chart_data['file_name']}。\n"
         f"【摘要】最高：{chart_data['max_price']}, 最低：{chart_data['min_price']}, 最新：{chart_data['latest_close']}。\n"
         f"🚨【强制语法】：必须严格使用 `![走势图](./{chart_data['file_name']})` 嵌入 Markdown 中！"
     )

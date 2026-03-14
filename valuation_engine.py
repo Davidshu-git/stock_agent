@@ -374,13 +374,14 @@ def fetch_etf_price_raw(etf_code: str, date: Optional[str] = None) -> Dict[str, 
         raise RuntimeError(f"akshare 查询失败：{ak_error}")
 
 
-def generate_kline_chart(ticker: str, save_dir: Path) -> Dict[str, Any]:
+def generate_kline_chart(ticker: str, save_dir: Path, days: int = 30) -> Dict[str, Any]:
     """
-    生成股票 30 天 K 线走势图。
+    生成股票 K 线走势图（支持自定义时间跨度）。
     
     Args:
         ticker: 股票代码
         save_dir: 图片保存目录
+        days: K 线图的时间跨度（天数），默认 30 天
     
     Returns:
         dict: {
@@ -397,7 +398,13 @@ def generate_kline_chart(ticker: str, save_dir: Path) -> Dict[str, Any]:
     """
     formatted_ticker = format_universal_ticker(ticker)
     stock = yf.Ticker(formatted_ticker)
-    hist = stock.history(period="1mo")
+    
+    # 计算起始日期
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days)
+    
+    # 获取指定时间范围的历史数据
+    hist = stock.history(start=start_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"))
     
     if hist.empty:
         raise IndexError(f"未找到 {formatted_ticker} 的历史数据，无法绘图")
@@ -448,7 +455,7 @@ def generate_kline_chart(ticker: str, save_dir: Path) -> Dict[str, Any]:
         type='candle', 
         volume=True, 
         style=s, 
-        title=f"\n{formatted_ticker} 30-Day Trend", 
+        title=f"\n{formatted_ticker} {days}-Day Trend", 
         mav=(5, 10),
         mavcolors=['#c481ec', '#2962ff'], # 🌟 视觉点睛：霓虹紫 + 电光蓝 均线
         figsize=(12, 6),                  # 🎬 升级为 2:1 的宽屏影院比例，K 线更舒展
