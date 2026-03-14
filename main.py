@@ -699,6 +699,57 @@ def query_job_status(job_id: str) -> str:
         return f"❌ 查询失败：{type(e).__name__} - {str(e)}"
 
 
+# ==========================================
+# 插件 11：自然语言智能盯盘预警创建器
+# ==========================================
+@tool
+def create_price_alert(ticker: str, operator: str, target_price: float) -> str:
+    """
+    🚨【自然语言盯盘预警创建器】：
+    当用户用自然语言要求"盯着"、"跌破"、"突破"、"涨过"某个具体价格时提醒他，必须调用此工具！
+    你负责将用户的自然语言意图，转化为严谨的系统参数。
+    
+    Args:
+        ticker: 股票代码（如 AAPL, 0700.HK, 513050.SS）。如果不确定，请先用 search_company_ticker 查询。
+        operator: 必须严格输出 '<'（跌破/低于） 或 '>'（突破/高于/涨过）。
+        target_price: 具体的触发价格（必须是纯数字）。
+    """
+    import json
+    import os
+    from pathlib import Path
+    from datetime import datetime
+    
+    alerts_file = Path("./memory/alerts.json").resolve()
+    alerts_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    alerts = {}
+    if alerts_file.exists():
+        try:
+            with open(alerts_file, 'r', encoding='utf-8') as f:
+                alerts = json.load(f)
+        except Exception:
+            pass
+            
+    allowed_users = os.getenv("ALLOWED_TG_USERS", "").split(",")
+    admin_id = allowed_users[0].strip() if allowed_users and allowed_users[0] else "default"
+    
+    if admin_id not in alerts:
+        alerts[admin_id] = {}
+        
+    task_key = f"{ticker}_{operator}_{target_price}"
+    alerts[admin_id][task_key] = {
+        "ticker": ticker,
+        "operator": operator,
+        "target_price": target_price,
+        "created_at": datetime.now().isoformat()
+    }
+    
+    with open(alerts_file, 'w', encoding='utf-8') as f:
+        json.dump(alerts, f, ensure_ascii=False, indent=2)
+        
+    return f"✅ 预警任务已安全挂载至底层引擎：当 {ticker} {operator} {target_price} 时将自动拦截并通知用户。"
+
+
 tools = [get_universal_stock_price,
          get_etf_price,
          draw_universal_stock_chart,
@@ -710,7 +761,8 @@ tools = [get_universal_stock_price,
          append_transaction_log,
          calculate_exact_portfolio_value,
          trigger_daily_report,
-         query_job_status]
+         query_job_status,
+         create_price_alert]
 
 # ==========================================
 # 🧠 配置长效记忆引擎 (Long-Term Memory)

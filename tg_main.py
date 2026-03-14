@@ -28,6 +28,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 
 # 🌟 无缝引入咱们精心打磨的底层 Agent 引擎
 from main import agent_with_chat_history, get_user_profile
+from valuation_engine import fetch_stock_price_raw
 
 
 
@@ -130,6 +131,7 @@ async def send_dashboard(message_obj: Message, first_name: str):
     keyboard = [
         [InlineKeyboardButton("💼 盘点当前持仓与盈亏", callback_data="cmd_portfolio")],
         [InlineKeyboardButton("📝 极速触发盘后研报", callback_data="cmd_daily_report")],
+        [InlineKeyboardButton("🔔 设定盯盘价格预警", callback_data="cmd_alert")],
         [InlineKeyboardButton("📊 查询最新任务进度", callback_data="cmd_status")],
         [InlineKeyboardButton("📚 调阅历史情报档案", callback_data="cmd_kb_list")]
     ]
@@ -150,6 +152,7 @@ async def post_init(application: Application):
         BotCommand("report", "📝 极速触发盘后研报"),
         BotCommand("status", "📊 查询最新任务进度"),
         BotCommand("kb", "📚 调阅历史情报档案"),
+        BotCommand("alert", "🔔 设定盯盘价格预警"),
     ])
     logger.info("✅ 左下角全局菜单 (Bot Commands) 注入成功！")
 
@@ -220,12 +223,11 @@ async def _dispatch_report_task(message: Message, job_id: str) -> None:
     reply_text = (
         f"✅ 研报任务已成功挂载至后台独立进程！\n\n"
         f"**任务 ID**: <code>{job_id}</code>\n\n"
-        f"您可以继续聊天或锁屏手机。大约 30~60 秒后，研报将自动推送到您的屏幕。"
+        f"您可以继续聊天或锁屏手机。大约 3~4 分钟后，研报将自动推送到您的屏幕。"
     )
     
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data=f"check_job:{job_id}")],
-        [InlineKeyboardButton("🏠 唤醒主控台", callback_data="cmd_home")]
+        [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data=f"check_job:{job_id}")]
     ])
     
     # 发送提示卡片
@@ -689,6 +691,69 @@ async def execute_agent_task(
             pass
 
 
+async def price_watcher_routine(context: ContextTypes.DEFAULT_TYPE):
+    """🌟 纯 Python 轻量级盯盘引擎 (每 5 分钟执行，0 Token 消耗)"""
+    import logging
+    
+    alerts_file = Path("./memory/alerts.json").resolve()
+    if not alerts_file.exists():
+        return
+        
+    try:
+        with open(alerts_file, 'r', encoding='utf-8') as f:
+            alerts = json.load(f)
+    except Exception:
+        return
+        
+    if not alerts:
+        return
+        
+    changed = False
+    
+    for chat_id_str, user_tasks in list(alerts.items()):
+        chat_id = int(chat_id_str)
+        triggered_keys = []
+        
+        for task_key, task_info in user_tasks.items():
+            ticker = task_info['ticker']
+            operator = task_info['operator']
+            target_price = float(task_info['target_price'])
+            
+            try:
+                price_data = fetch_stock_price_raw(ticker)
+                current_price = float(price_data.get('close', 0))
+                if current_price == 0:
+                    continue
+                
+                is_triggered = False
+                if operator == '<' and current_price <= target_price:
+                    is_triggered = True
+                elif operator == '>' and current_price >= target_price:
+                    is_triggered = True
+                    
+                if is_triggered:
+                    alert_msg = (
+                        f"<blockquote><b>🚨 智能盯盘触发警告</b></blockquote>\n"
+                        f"标的代码：<b>{ticker}</b>\n"
+                        f"预警条件：{operator} {target_price}\n"
+                        f"当前最新价：<b>{current_price}</b>\n\n"
+                        f"<i>系统已自动将此单次预警任务销毁。</i>"
+                    )
+                    await context.bot.send_message(chat_id=chat_id, text=alert_msg, parse_mode=ParseMode.HTML)
+                    triggered_keys.append(task_key)
+                    
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"预警查价失败 {ticker}: {e}")
+                
+        for key in triggered_keys:
+            del alerts[chat_id_str][key]
+            changed = True
+            
+    if changed:
+        with open(alerts_file, 'w', encoding='utf-8') as f:
+            json.dump(alerts, f, ensure_ascii=False, indent=2)
+
+
 def _read_job_status_sync(job_id: str) -> str:
     """⚡ 脊髓反射：直接读取本地 JSON，零延迟返回，绝对不调用大模型"""
     try:
@@ -755,7 +820,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # 我们在这个状态卡片上保留一个刷新按钮，方便用户直接在这个气泡上反复点
     # 使用特殊标记 latest，每次点击都会重新获取最新 job_id
     refresh_keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 刷新此任务", callback_data="check_job:latest")]
+        [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data="check_job:latest")]
     ])
     await message.reply_text(status_text, parse_mode=ParseMode.HTML, reply_markup=refresh_keyboard)
 
@@ -944,6 +1009,18 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif cmd == "cmd_kb_list":
         user_msg = "列出知识库里现在有哪些文件可以读取？"
         
+    elif cmd == "cmd_alert":
+        text = (
+            "<blockquote><b>🔔 智能盯盘预警系统</b></blockquote>\n"
+            "您现在可以使用自然语言下发盯盘指令，AI 会自动为您解析参数并挂载到后台监控引擎。\n\n"
+            "<b>您可以直接这样对我说：</b>\n"
+            "🗣️ <i>「帮我盯着英伟达，如果跌破 100 块叫我一声。」</i>\n"
+            "🗣️ <i>「如果腾讯涨破了 350 港币，发消息提醒我减仓。」</i>"
+        )
+        if query.message:
+            await query.message.reply_text(text, parse_mode=ParseMode.HTML)
+        return
+        
     else:
         logger.warning(f"未知按钮指令：{cmd}")
         return
@@ -1039,10 +1116,6 @@ async def broadcast_to_telegram(text: str):
                         await bot.send_message(chat_id=user_id, text=fallback)
                     await asyncio.sleep(0.3)
                     
-            # 3. 闭环收尾：发完研报后，再次弹出主控台按钮方便交互
-            home_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 唤醒主控台", callback_data="cmd_home")]])
-            await bot.send_message(chat_id=user_id, text="✨ 今日盘后播报完毕。", reply_markup=home_btn)
-            
         except Exception as e:
             logger.error(f"向用户 {user_id} 推送失败：{e}")
 
@@ -1084,9 +1157,14 @@ def main():
     application.add_handler(CommandHandler("portfolio", portfolio_command))
     application.add_handler(CommandHandler("report", report_command))
     application.add_handler(CommandHandler("kb", kb_command))
+    application.add_handler(CommandHandler("alert", kb_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CallbackQueryHandler(handle_button_click))
+
+    # 🌟 挂载每 5 分钟一次的纯 Python 盯盘巡检器 (0 Token 消耗)
+    if application.job_queue:
+        application.job_queue.run_repeating(price_watcher_routine, interval=300, first=10)
 
     # 启动长轮询，Bot 会一直挂在后台监听
     application.run_polling(allowed_updates=Update.ALL_TYPES)
