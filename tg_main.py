@@ -5,7 +5,7 @@ import logging
 import asyncio
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message, BotCommand, Bot
-from telegram.constants import ParseMode
+from telegram.constants import ParseMode, ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from dotenv import load_dotenv
 
@@ -52,6 +52,23 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+async def keep_typing_action(chat_id: int, context):
+    """🌟 无限幽灵输入：守护协程
+    
+    每隔 4 秒发送一次 typing 状态，直到被强行 Kill 掉
+    
+    Args:
+        chat_id: Telegram 聊天 ID
+        context: Telegram Context 对象
+    """
+    try:
+        while True:
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        pass
+
 
 def _is_authorized_user(user_id: int) -> bool:
     """验证用户是否在授权白名单中
@@ -532,21 +549,27 @@ async def execute_agent_task(
     """
     logger.info(f"[execute_agent_task] 开始执行任务 | user_id={user_id}, msg_length={len(user_msg)}")
     
-    # 🌟 1. 下发初始高颜值占位符
-    status_msg = await message.reply_text(
-        "<blockquote><b>🤖 OmniStock 引擎已唤醒</b></blockquote>\n<i>⏳ 正在建立神经连接...</i>", 
-        parse_mode=ParseMode.HTML
-    )
-    
-    # 触发打字状态
     effective_chat = update.effective_chat
-    if effective_chat is not None:
-        await context.bot.send_chat_action(chat_id=effective_chat.id, action='typing')
+    if effective_chat is None:
+        logger.warning("无法获取 effective_chat，终止任务")
+        return
     
-    # 🌟 2. 实例化你的专属 Telegram 回调拦截器
-    tg_callback = AsyncTelegramCallbackHandler(status_msg)
+    chat_id = effective_chat.id
+    
+    # 🌟 1. 启动无限心跳引擎 (后台运行，不阻塞主线程)
+    typing_task = asyncio.create_task(keep_typing_action(chat_id, context))
+    
+    status_msg: Message | None = None
     
     try:
+        # 🌟 2. 下发初始高颜值占位符
+        status_msg = await message.reply_text(
+            "<blockquote><b>🤖 OmniStock 引擎已唤醒</b></blockquote>\n<i>⏳ 正在建立神经连接...</i>", 
+            parse_mode=ParseMode.HTML
+        )
+        
+        # 🌟 3. 实例化你的专属 Telegram 回调拦截器
+        tg_callback = AsyncTelegramCallbackHandler(status_msg)
         # 🚀 3. 异步唤醒底层 AI 引擎，并将拦截器强行注入配置 (Config)！
         response = await agent_with_chat_history.ainvoke(
             {
@@ -650,9 +673,19 @@ async def execute_agent_task(
         
     except Exception as e:
         logger.error(f"[execute_agent_task] 处理失败：{e}")
-        # 确保即使出错也要删除等待提示，避免残留
-        await status_msg.delete()
+        if status_msg:
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
         await message.reply_text(f"⚠️ 系统熔断：{str(e)}")
+    finally:
+        # 🛑 无论大模型成功还是崩溃报错，必须在 finally 里精准射杀心跳协程！
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
 
 
 def _read_job_status_sync(job_id: str) -> str:
