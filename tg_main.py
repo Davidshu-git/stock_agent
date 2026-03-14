@@ -1018,13 +1018,22 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
         
     elif cmd == "cmd_status":
-        # 复用 status_command 的纯 Python 逻辑
-        if query.message and isinstance(query.message, Message):
-            fake_update = Update(
-                update_id=query.message.message_id,
-                message=query.message
-            )
-            await status_command(fake_update, context)
+        # 🌟 脊髓反射：直接执行状态查询逻辑，避免重复权限检查
+        latest_job_id = _get_latest_job_id()
+        
+        if not latest_job_id:
+            if query.message:
+                await query.message.reply_text("📭 当前系统没有任何后台任务记录。")
+            return
+            
+        status_text = _read_job_status_sync(latest_job_id)
+        
+        refresh_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data="check_job:latest")]
+        ])
+        
+        if query.message:
+            await query.message.reply_text(status_text, parse_mode=ParseMode.HTML, reply_markup=refresh_keyboard)
         return
         
     elif cmd == "cmd_kb_list":
