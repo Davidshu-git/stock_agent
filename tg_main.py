@@ -826,10 +826,13 @@ def _get_latest_job_id() -> str:
     return latest_file.stem  # 返回去掉后缀的纯 job_id
 
 
-@authorized
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """处理来自左下角菜单的 /status 快捷指令"""
-    message = update.message
+async def _handle_status_query(message: Message) -> None:
+    """
+    内部函数：处理状态查询逻辑（复用核心逻辑）
+    
+    Args:
+        message: Telegram Message 对象
+    """
     latest_job_id = _get_latest_job_id()
     
     if not latest_job_id:
@@ -838,12 +841,19 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
     status_text = _read_job_status_sync(latest_job_id)
     
-    # 我们在这个状态卡片上保留一个刷新按钮，方便用户直接在这个气泡上反复点
-    # 使用特殊标记 latest，每次点击都会重新获取最新 job_id
     refresh_keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data="check_job:latest")]
     ])
     await message.reply_text(status_text, parse_mode=ParseMode.HTML, reply_markup=refresh_keyboard)
+
+
+@authorized
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理来自左下角菜单的 /status 快捷指令"""
+    message = update.message
+    if message is None:
+        return
+    await _handle_status_query(message)
 
 
 @authorized
@@ -1018,22 +1028,9 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
         
     elif cmd == "cmd_status":
-        # 🌟 脊髓反射：直接执行状态查询逻辑，避免重复权限检查
-        latest_job_id = _get_latest_job_id()
-        
-        if not latest_job_id:
-            if query.message:
-                await query.message.reply_text("📭 当前系统没有任何后台任务记录。")
-            return
-            
-        status_text = _read_job_status_sync(latest_job_id)
-        
-        refresh_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data="check_job:latest")]
-        ])
-        
-        if query.message:
-            await query.message.reply_text(status_text, parse_mode=ParseMode.HTML, reply_markup=refresh_keyboard)
+        # 🌟 脊髓反射：复用内部状态查询逻辑（权限已在函数入口处验证）
+        if query.message and isinstance(query.message, Message):
+            await _handle_status_query(query.message)
         return
         
     elif cmd == "cmd_kb_list":
