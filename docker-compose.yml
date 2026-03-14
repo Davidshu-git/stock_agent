@@ -1,8 +1,8 @@
 version: '3.8'
 services:
-  omnistock-agent:
+  omnistock-daily-report:
     build: .
-    container_name: omnistock-agent
+    container_name: omnistock-daily-report
     restart: unless-stopped
     volumes:
       # 将四大核心数据目录挂载出来，保证 L1/L2 缓存和用户记忆永久持久化
@@ -25,4 +25,4 @@ services:
       - ./jobs:/app/jobs
       - ./.env:/app/.env
     depends_on:
-      - omnistock-agent
+      - omnistock-daily-report

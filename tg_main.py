@@ -3,7 +3,12 @@ import re
 import time
 import logging
 import asyncio
+import json
+import subprocess
+import sys
+import uuid
 from datetime import datetime
+from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message, BotCommand, Bot
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -239,10 +244,6 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     
     try:
-        import subprocess
-        import sys
-        import uuid
-        
         # 1. 生成唯一任务 ID
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         
@@ -690,8 +691,6 @@ async def execute_agent_task(
 
 def _read_job_status_sync(job_id: str) -> str:
     """⚡ 脊髓反射：直接读取本地 JSON，零延迟返回，绝对不调用大模型"""
-    import json
-    from pathlib import Path
     try:
         status_file = Path(f"./jobs/status/{job_id}.json").resolve()
         if not status_file.exists():
@@ -728,9 +727,6 @@ def _read_job_status_sync(job_id: str) -> str:
 
 def _get_latest_job_id() -> str:
     """⚡ 硬盘级嗅探：扫描本地状态目录，获取最新提交的任务 ID"""
-    from pathlib import Path
-    import os
-    
     status_dir = Path("./jobs/status").resolve()
     if not status_dir.exists():
         return ""
@@ -926,9 +922,6 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         
     elif cmd == "cmd_daily_report":
         # ⚡ 脊髓反射启动：复用公共派发函数
-        import subprocess
-        import sys
-        import uuid
         
         # 1. 生成唯一任务 ID
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
