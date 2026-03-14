@@ -283,14 +283,27 @@ class AsyncTelegramCallbackHandler(AsyncCallbackHandler):
         
         # 极客风的工具状态映射表
         tool_map = {
+            # 行情查询类
             "get_universal_stock_price": "📈 正在拉取全球实时盘面数据...",
             "get_etf_price": "📊 正在拉取 ETF 基金核心数据...",
+            # 绘图引擎类
             "draw_universal_stock_chart": "🎨 正在启动绘图引擎渲染 K 线...",
+            # 搜索类
             "search_company_ticker": "🔍 正在全网检索股票代码...",
-            "calculate_exact_portfolio_value": "🧮 正在使用 CPU ALU 精确核算财务数据...",
-            "analyze_local_document": "📚 正在穿透本地向量库检索研报...",
+            # 文件操作类
+            "read_local_file": "📂 正在穿透沙箱读取本地文件...",
             "write_local_file": "📝 正在排版并生成最终深度报告...",
-            "update_user_memory": "🧠 正在将关键信息写入长期记忆库..."
+            "list_kb_files": "🗂️ 正在扫描知识库文件索引...",
+            # RAG 检索类
+            "analyze_local_document": "📚 正在穿透本地向量库检索研报...",
+            # 记忆系统类
+            "update_user_memory": "🧠 正在将关键信息写入长期记忆库...",
+            "append_transaction_log": "📜 正在追加交易日志流水账...",
+            # 财务计算类
+            "calculate_exact_portfolio_value": "🧮 正在使用程序精确核算财务数据...",
+            # 研报任务类
+            "trigger_daily_report": "🚀 正在将研报任务投递至独立进程...",
+            "query_job_status": "📡 正在追踪后台任务执行状态..."
         }
         msg = tool_map.get(tool_name, f"⚡ 正在挂载系统组件：{tool_name}...")
         
@@ -792,7 +805,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rag_prompt = f"我已经把一份名为 '{file_name}' 的文件放进了知识库。请调用 analyze_local_document 工具，仔细阅读这篇文档，并给我一份结构化的核心内容摘要。"
         
         # 将提示消息传给后续流以便任务完成后删除
-        await execute_agent_task(rag_prompt, message, user_id, context, update)
+        await execute_agent_task(rag_prompt, message, user.id, context, update)
         
         # 任务完毕后清理掉这条冗长的进度消息
         try:
