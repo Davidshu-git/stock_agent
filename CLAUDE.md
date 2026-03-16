@@ -19,8 +19,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
+# 安装 Playwright 无头浏览器内核（首次安装后需执行一次）
+./.venv/bin/playwright install chromium
+
 # 启动交互式终端 Agent
 ./.venv/bin/python main.py
+
+# 启动 Telegram Bot（移动端交互入口）
+./.venv/bin/python tg_main.py
 
 # 启动盘后定时调度器（等待每日 15:30）
 ./.venv/bin/python daily_job.py
@@ -45,6 +51,10 @@ pytest tests/test_valuation.py::TestCalculatePortfolioValuationHappyPath -v
 DASHSCOPE_API_KEY=          # 主模型推理（Qwen via DashScope）
 DASHSCOPE_EMBEDDING_KEY=    # RAG 向量化（text-embedding-v3）
 
+# Telegram Bot（启动 tg_main.py 必填）
+TG_BOT_TOKEN=               # BotFather 获取的 Bot Token
+ALLOWED_TG_USERS=           # 白名单用户 ID，逗号分隔（如 123456,789012）
+
 # 可选（邮件推送服务）
 SMTP_SERVER=
 SMTP_PORT=465
@@ -53,7 +63,9 @@ SENDER_PASSWORD=
 RECEIVER_EMAIL=
 ```
 
-两个 DashScope Key 在 `main.py` 启动时立即校验，缺失任一将直接抛出 `ValueError` 终止进程。
+- `DASHSCOPE_API_KEY` / `DASHSCOPE_EMBEDDING_KEY`：在 `main.py` 启动时立即校验，缺失任一直接 `ValueError` 终止。
+- `TG_BOT_TOKEN`：在 `tg_main.py` 启动时校验，缺失直接终止。
+- `ALLOWED_TG_USERS`：Bot 的单用户白名单，所有未授权请求由 `@authorized` 装饰器统一拦截返回 403。
 
 ---
 
@@ -97,10 +109,13 @@ RECEIVER_EMAIL=
 | 文件 | 职责 |
 |------|------|
 | `main.py` | Agent 编排核心：LangChain 工具注册、STM/LTM 记忆引擎、REPL 主循环、RAG 检索管道 |
+| `tg_main.py` | Telegram Bot 移动端交互层：白名单认证、Inline Keyboard 操控盘、异步 Agent 回调、Playwright 表格渲染、盯盘预警轮询、跨进程广播接收 |
+| `spawn_job.py` | 研报独立进程启动器：由 `trigger_daily_report` 工具以 `subprocess.Popen` 启动，写入任务状态文件与日志 |
 | `valuation_engine.py` | 纯 Python 金融引擎：Ticker 格式化中间件、多源查价（yfinance/akshare）、K 线图生成、多币种 CNY 折算与持仓估值 |
-| `daily_job.py` | 盘后调度器：多源资讯聚合去重（财联社/新浪/东财）、报告生成、邮件推送、知识库归档 |
+| `daily_job.py` | 盘后调度器：多源资讯聚合去重（财联社/新浪/东财）、报告生成、邮件推送、知识库归档、Telegram 广播推送 |
 | `notifier.py` | SMTP 邮件发送：Markdown→HTML 渲染，tenacity 重试 |
 | `tests/test_valuation.py` | `valuation_engine.py` 的单元测试，使用 `pytest` + `unittest.mock` 隔离外部依赖 |
+| `tests/test_tg_renderer.py` | Telegram 渲染引擎单元测试：HTML 转换、表格识别、消息拆分逻辑 |
 
 ### 关键设计模式
 
@@ -118,18 +133,54 @@ RECEIVER_EMAIL=
 
 **估值引擎隔离**：`valuation_engine.py::calculate_portfolio_valuation()` 是系统唯一的财务计算来源。System Prompt 已明确禁止 LLM 自行心算——必须通过 `calculate_exact_portfolio_value` 工具调用。
 
+**研报触发器独立进程架构**：`trigger_daily_report` 工具不再阻塞主线程，改为以 `subprocess.Popen` 启动 `spawn_job.py` 作为独立子进程；任务状态写入 `jobs/status/{job_id}.json`，日志写入 `jobs/logs/{job_id}.log`。可通过 `query_job_status(job_id)` 工具异步查询进度，状态枚举为 `pending → running → completed/failed`。
+
+**价格预警系统**：`create_price_alert(ticker, operator, target_price)` 将预警规则写入 `memory/alerts.json`（按用户 chat_id 分组）。`tg_main.py` 中的 `price_watcher_routine` 每 5 分钟轮询一次，命中条件后通过 Telegram 推送通知并自动删除该条规则（一次性触发）。
+
+**Telegram Bot 渲染管道**（`tg_main.py`）：
+- LLM 输出先经 `translate_to_telegram_html()` 转为 Telegram 兼容的 HTML（支持加粗、代码块、4 级标题降级兜底）。
+- 若检测到 Markdown 表格，则调用 `render_markdown_table_to_image()` 启动 Playwright 无头浏览器渲染为高分辨率 PNG（3x DSF 超采样），以图片形式发送。
+- 超长消息由 `send_with_caption_split()` 自动分段，防止超出 Telegram 单条消息字数上限。
+- Agent 推理过程中通过 `AsyncTelegramCallbackHandler` 实时上报工具调用状态，配合 `keep_typing_action()` 心跳维持"正在输入"状态，消除用户等待焦虑。
+
 ### 盘后报告数据流
 
 ```
 daily_job.py::job_routine()
-  ├── fetch_global_market_news()     # 并行拉取：财联社 + 新浪 + 东财 → 去重 → top 200
-  ├── fetch_global_indices()         # 沪深300 + HSI + HSTECH + NDX（经由 valuation_engine）
+  ├── fetch_global_market_news()        # 并行拉取：财联社 + 新浪 + 东财 → 去重 → top 200
+  ├── fetch_global_indices()            # 沪深300 + HSI + HSTECH + NDX（经由 valuation_engine）
   ├── load_user_profile()
   │     └── parse_user_profile_to_positions() + calculate_portfolio_valuation()
-  ├── generate_market_report()       # LLM 长文本推理（120s 超时）
-  ├── knowledge_base/盘后日报_*.md   # 归档至知识库，沉淀为 RAG 数据源
-  └── notifier.send_market_report_email()
+  ├── generate_market_report()          # LLM 长文本推理（120s 超时）
+  ├── knowledge_base/盘后日报_*.md      # 归档至知识库，沉淀为 RAG 数据源
+  ├── notifier.send_market_report_email()
+  └── broadcast_to_telegram()          # 跨进程广播至 tg_main.py，推送至 Telegram
 ```
+
+### 研报触发数据流（独立进程）
+
+```
+用户（终端/Telegram Bot）
+  └── trigger_daily_report 工具
+        └── subprocess.Popen("spawn_job.py --job-id job_xxx")
+              ├── 写入 jobs/status/job_xxx.json  (status: running)
+              ├── 写入 jobs/logs/job_xxx.log
+              ├── job_routine()
+              └── 写入 jobs/status/job_xxx.json  (status: completed/failed)
+```
+
+### Telegram Bot 命令路由
+
+| 命令 | 处理函数 | 说明 |
+|------|---------|------|
+| `/start` | `start_command` | 发送 Inline Keyboard 操控面板 |
+| `/portfolio` | `portfolio_command` | 触发持仓估值计算，返回 Markdown 表格图片 |
+| `/report` | `report_command` | 投递研报生成任务至独立进程 |
+| `/status` | `status_command` | 查询最近一次研报任务状态 |
+| `/kb` | `kb_command` | 列出知识库文件 |
+| `/alert` | `alert_command` | 引导用户设定盯盘价格预警 |
+| 普通文本 | `handle_message` | 路由至 Agent 推理引擎 |
+| 文件上传 | `handle_document` | 自动存入知识库并触发 RAG 总结 |
 
 ### 持久化目录
 
@@ -138,7 +189,9 @@ daily_job.py::job_routine()
 | `agent_workspace/` | AI 读写沙箱，存放生成的报告（`.md`）与 K 线图（`.png`） |
 | `knowledge_base/` | RAG 知识库原始文件（PDF/MD/TXT/CSV）+ 归档的盘后日报 |
 | `embeddings/` | FAISS 向量库硬盘缓存（每个文档一个子目录） |
-| `memory/` | `user_profile.json`（LTM）、`transaction_logs.jsonl`、会话历史 JSON |
+| `memory/` | `user_profile.json`（LTM）、`transaction_logs.jsonl`、`alerts.json`（价格预警规则）、会话历史 JSON |
+| `jobs/status/` | 研报任务状态文件（`{job_id}.json`，独立进程写入） |
+| `jobs/logs/` | 研报任务执行日志（`{job_id}.log`，独立进程写入） |
 
 ### LLM 配置
 
@@ -150,15 +203,28 @@ daily_job.py::job_routine()
 | 盘后报告生成（`daily_job.py`） | 120s | 3 次 |
 | 外部 I/O 工具（tenacity） | — | 3 次，等待 2–10s 指数退避 |
 
+### 核心依赖一览（新增部分）
+
+| 库 | 用途 |
+|----|------|
+| `python-telegram-bot~=22.6` | Telegram Bot API，`tg_main.py` 的底层驱动 |
+| `playwright~=1.58.0` | 无头浏览器，渲染 Markdown 表格为高分辨率 PNG |
+| `langgraph~=0.2.0` | 多智能体研报辩论引擎（LangGraph 状态机） |
+
+首次使用 Playwright 需额外执行：`./.venv/bin/playwright install chromium`
+
 ### 容器化与生产部署
 
 ```bash
-# Docker（适合开发调试）
+# Docker（现为双服务架构）
 docker compose up -d
-# 挂载卷：memory/, agent_workspace/, knowledge_base/, embeddings/, .env
+# omnistock-daily-report：盘后调度器
+# tg-bot：Telegram Bot（depends_on daily-report）
+# 共享挂载卷：memory/, agent_workspace/, knowledge_base/, embeddings/, jobs/
 
-# PM2（生产推荐，用于盘后调度器的守护进程）
-pm2 start daily_job.py --name "OmniStock-Agent" --interpreter ./.venv/bin/python
-pm2 logs OmniStock-Agent   # 实时日志
+# PM2（生产推荐，分别守护两个进程）
+pm2 start daily_job.py --name "OmniStock-Scheduler" --interpreter ./.venv/bin/python
+pm2 start tg_main.py   --name "OmniStock-TGBot"     --interpreter ./.venv/bin/python
+pm2 logs OmniStock-TGBot   # 实时日志
 pm2 monit                  # 资源监控面板
 ```
