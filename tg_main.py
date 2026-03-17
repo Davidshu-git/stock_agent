@@ -1,3 +1,4 @@
+import ast
 import os
 import re
 import time
@@ -304,6 +305,7 @@ class AsyncTelegramCallbackHandler(AsyncCallbackHandler):
     def __init__(self, status_message: Message):
         self.status_message = status_message
         self.last_update_time = 0.0
+        self.written_md_files: set[str] = set()
 
     async def _safe_edit(self, text: str):
         """防抖更新，避免触发 Telegram 严格的 API 频率限制 (Rate Limit)"""
@@ -321,6 +323,15 @@ class AsyncTelegramCallbackHandler(AsyncCallbackHandler):
     async def on_tool_start(self, serialized: dict, input_str: str, **kwargs):
         """当大模型决定调用某个工具时触发"""
         tool_name = serialized.get("name", "tool")
+
+        if tool_name == "write_local_file":
+            try:
+                params = ast.literal_eval(input_str)
+                file_path = params.get("file_path", "")
+                if file_path.endswith(".md"):
+                    self.written_md_files.add(Path(file_path).name)
+            except (ValueError, SyntaxError, AttributeError):
+                pass
         
         # 极客风的工具状态映射表
         tool_map = {
@@ -693,8 +704,17 @@ async def execute_agent_task(
                     # 微小延迟，锁死文章阅读流顺序
                     await asyncio.sleep(0.2)
         
-        # 任务完成，静默结束
-        
+        # 🌟 5. 若本次写入了 .md 文件，展示 Inline Keyboard 供用户按需下载
+        if tg_callback.written_md_files:
+            buttons = [
+                [InlineKeyboardButton(f"📄 {md_name}", callback_data=f"send_file:{md_name}")]
+                for md_name in tg_callback.written_md_files
+            ]
+            await message.reply_text(
+                "📁 以下报告文件已生成，点击即可获取：",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+
     except Exception as e:
         logger.error(f"[execute_agent_task] 处理失败：{e}")
         if status_msg:
@@ -999,7 +1019,27 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             pass # 忽略 Telegram "内容未发生改变 (Message is not modified)" 的冗余报错
         return
 
-    # 🌟 3. 闭环路由：拦截返回主控台的指令
+    # 🌟 3. 文件按需下载：发送 agent_workspace 中指定的 .md 文件
+    if cmd.startswith("send_file:"):
+        md_name = cmd.split(":", 1)[1]
+        md_path = (SANDBOX_DIR / md_name).resolve()
+        if not md_path.exists():
+            await query.message.reply_text(f"⚠️ 文件不存在或已被清理：{md_name}")
+            return
+        try:
+            with open(md_path, 'rb') as doc:
+                await query.message.reply_document(
+                    document=doc,
+                    filename=md_name,
+                    caption=f"📄 <b>{md_name}</b>",
+                    parse_mode=ParseMode.HTML
+                )
+        except Exception as e:
+            logger.error(f"按需发送文件失败 [{md_name}]：{e}")
+            await query.message.reply_text(f"⚠️ 文件发送失败：{e}")
+        return
+
+    # 🌟 4. 闭环路由：拦截返回主控台的指令
     if cmd == "cmd_home":
         try:
             if query.message and isinstance(query.message, Message):

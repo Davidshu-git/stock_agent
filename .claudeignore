@@ -1,0 +1,35 @@
+# 1. 密钥与本地配置
+.env
+
+# 2. 虚拟环境
+.venv/
+venv/
+env/
+
+# 3. Python 缓存与编译文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 4. macOS 系统文件
+.DS_Store
+
+# 5. 我们之前写的本地沙箱数据目录（防止把生成的报告传上去）
+agent_workspace/
+knowledge_base/
+embeddings/
+memory/
+jobs/
+
+# 6. OpenCode 架构方案目录（自动生成的临时设计文档）
+.opencode/
+
+# 7. Claude Code 本地配置（本机授权记录，不应共享）
+.claude/
+
+# === VS Code 配置文件 ===
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
