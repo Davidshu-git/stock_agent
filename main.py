@@ -750,6 +750,102 @@ def create_price_alert(ticker: str, operator: str, target_price: float) -> str:
     return f"✅ 预警任务已安全挂载至底层引擎：当 {ticker} {operator} {target_price} 时将自动拦截并通知用户。"
 
 
+# ==========================================
+# 工作区文件整理工具（两步走：预览 -> 确认删除）
+# ==========================================
+@tool
+def preview_workspace_cleanup(
+    older_than_days: int = 0,
+    file_extensions: str = "",
+) -> str:
+    """
+    扫描 agent_workspace 并列出符合条件的待删文件，不执行任何删除操作。
+    用户确认列表后，再调用 execute_workspace_cleanup 执行删除。
+
+    Args:
+        older_than_days: 仅列出修改时间超过指定天数的文件，0 表示不限制。
+        file_extensions: 仅列出指定后缀的文件，多个后缀用逗号分隔（如 "png,pdf"），空字符串表示不限制。
+
+    Returns:
+        str: 待删文件列表及总大小，供用户确认。
+    """
+    import time as _time
+
+    now = _time.time()
+    ext_filter = [e.strip().lstrip('.').lower() for e in file_extensions.split(',') if e.strip()] if file_extensions else []
+
+    candidates = []
+    for f in SANDBOX_DIR.iterdir():
+        if not f.is_file():
+            continue
+        stat = f.stat()
+        age_days = (now - stat.st_mtime) / 86400
+        ext = f.suffix.lstrip('.').lower()
+
+        if older_than_days > 0 and age_days < older_than_days:
+            continue
+        if ext_filter and ext not in ext_filter:
+            continue
+
+        candidates.append({
+            "name": f.name,
+            "size_mb": round(stat.st_size / (1024 * 1024), 3),
+            "age_days": round(age_days, 1),
+        })
+
+    if not candidates:
+        return "✅ 未找到符合条件的文件，无需清理。"
+
+    candidates.sort(key=lambda x: x["age_days"], reverse=True)
+    total_mb = sum(c["size_mb"] for c in candidates)
+
+    lines = [f"📋 找到 {len(candidates)} 个待删文件，共 {total_mb:.2f} MB：\n"]
+    for c in candidates:
+        lines.append(f"  • {c['name']}  ({c['size_mb']} MB, {c['age_days']} 天前)")
+    lines.append(f"\n⚠️ 请向用户展示以上列表并询问是否确认删除。确认后调用 execute_workspace_cleanup 执行。")
+
+    return "\n".join(lines)
+
+
+@tool
+def execute_workspace_cleanup(filenames: str) -> str:
+    """
+    删除 agent_workspace 中指定的文件。必须在用户明确确认后才能调用。
+
+    Args:
+        filenames: 要删除的文件名列表，用逗号分隔（仅文件名，不含路径）。
+
+    Returns:
+        str: 删除结果汇报。
+    """
+    names = [n.strip() for n in filenames.split(',') if n.strip()]
+    if not names:
+        return "❌ 未提供任何文件名。"
+
+    deleted, failed = [], []
+    for name in names:
+        target = (SANDBOX_DIR / name).resolve()
+        if not target.is_relative_to(SANDBOX_DIR):
+            failed.append(f"{name}（路径越权，已拦截）")
+            continue
+        if not target.exists():
+            failed.append(f"{name}（文件不存在）")
+            continue
+        try:
+            size_mb = round(target.stat().st_size / (1024 * 1024), 3)
+            target.unlink()
+            deleted.append(f"{name} ({size_mb} MB)")
+        except OSError as e:
+            failed.append(f"{name}（删除失败：{e}）")
+
+    total_mb = sum(float(d.split('(')[1].rstrip(' MB)')) for d in deleted)
+    result = [f"✅ 成功删除 {len(deleted)} 个文件，释放 {total_mb:.2f} MB："]
+    result += [f"  • {d}" for d in deleted]
+    if failed:
+        result += [f"\n⚠️ 以下文件未能删除："] + [f"  • {f}" for f in failed]
+    return "\n".join(result)
+
+
 tools = [get_universal_stock_price,
          get_etf_price,
          draw_universal_stock_chart,
@@ -762,7 +858,9 @@ tools = [get_universal_stock_price,
          calculate_exact_portfolio_value,
          trigger_daily_report,
          query_job_status,
-         create_price_alert]
+         create_price_alert,
+         preview_workspace_cleanup,
+         execute_workspace_cleanup]
 
 # ==========================================
 # 🧠 配置长效记忆引擎 (Long-Term Memory)
@@ -856,7 +954,8 @@ prompt = ChatPromptTemplate.from_messages([
        - 📚 自定义深度分析：当用户要求对某只股票、某个公司或某个主题进行深度分析、生成报告、输出研究文档时，**必须调用 `write_local_file` 保存到文件**，禁止直接在聊天框输出长篇报告内容。无论用户是否明确说"保存"，只要涉及深度分析或报告生成，一律走文件保存流程。例如"帮我分析茅台"、"生成腾讯的研究报告"、"写一篇关于新能源的分析"、"给我一份xxx的深度报告"。
     
     3. 🖼️ 图文并茂：生成报告时，请务必先调用 draw_universal_stock_chart 生成走势图，并在传给 write_local_file 的 Markdown 内容中，使用 `![图表](./xxx.png)` 将图片嵌入。报告生成后无需向用户解释任何文件格式或交付细节，直接告知报告已生成即可。
-    4. 🧠 记忆系统：结合用户历史告知你的持仓情况或偏好进行解读。"""),
+    4. 🧠 记忆系统：结合用户历史告知你的持仓情况或偏好进行解读。
+    5. 🗂️ 工作区整理：当用户要求清理文件时，**必须两步走**：先调用 `preview_workspace_cleanup` 列出待删文件并展示给用户确认，用户明确同意后再调用 `execute_workspace_cleanup` 执行删除。**严禁跳过预览步骤直接删除。**"""),
     ("placeholder", "{chat_history}"),
     ("human", "{input}"),
     ("placeholder", "{agent_scratchpad}"),
