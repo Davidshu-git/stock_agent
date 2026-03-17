@@ -76,6 +76,20 @@ KB_DIR.mkdir(parents=True, exist_ok=True) # 如果没有会自动创建
 # 定义允许读取的文件后缀白名单
 ALLOWED_EXTENSIONS = {'.pdf', '.md', '.txt', '.csv'}
 
+
+def _resolve_safe_path(file_path: str, base_dir: Path) -> tuple[Path | None, str | None]:
+    """
+    将 file_path 解析为 base_dir 内的安全绝对路径。
+
+    Returns:
+        (resolved_path, None)   — 路径合法
+        (None, error_message)   — 路径越权，返回拦截错误信息
+    """
+    target = (base_dir / file_path).resolve()
+    if not target.is_relative_to(base_dir):
+        return None, f"❌ 安全拦截：探测到越权操作！路径 '{file_path}' 超出允许范围，已被系统拒绝。"
+    return target, None
+
 # 🌟 FAISS 向量硬盘持久化目录
 FAISS_DB_DIR = Path("./embeddings").resolve()
 FAISS_DB_DIR.mkdir(parents=True, exist_ok=True)
@@ -234,15 +248,11 @@ def read_local_file(file_path: str) -> str:
     注意：出于安全限制，你只能读取沙箱(agent_workspace)内的文件。
     """
     try:
-        # 1. 路径拼接与绝对路径解析
-        target_path = (SANDBOX_DIR / file_path).resolve()
-        
-        # 2. 🌟 核心防御：使用 is_relative_to 替代 startswith
-        # 这是 Python 3.9+ 提供的原生方法，它按层级严格判断，彻底杜绝平级恶意目录的绕过
-        if not target_path.is_relative_to(SANDBOX_DIR):
-            return "❌ 安全拦截：探测到越权操作！你试图读取沙箱外部的文件，已被系统拒绝。"
+        target_path, err = _resolve_safe_path(file_path, SANDBOX_DIR)
+        if err:
+            return err
 
-        # 3. 检查文件是否存在
+        # 检查文件是否存在
         if not target_path.exists():
             return f"❌ 找不到文件: {target_path.name}"
             
@@ -273,19 +283,11 @@ def write_local_file(file_path: str, content: str) -> str:
     输入参数 file_path 为目标文件名（例如：'report.md'）。
     """
     try:
-        # 1. 路径拼接与绝对路径解析 (核心防御步 1)
-        # 即使大模型传入类似 '../../隐藏目录/危险文件.txt' 的恶意路径，
-        # .resolve() 也会在底层将其拉直，计算出真实的绝对路径。
-        target_path = (SANDBOX_DIR / file_path).resolve()
-        
-        # 2. 越权判定 (核心防御步 2)
-        # 检查解析后的最终真实路径，是不是以我们的沙箱目录为开头的
-        # 如果不是，说明它用 ../ 成功逃逸到了上层目录，直接拦截！
-        # 将 startswith 替换为底层的层级判定
-        if not target_path.is_relative_to(SANDBOX_DIR):
-            return "❌ 安全拦截：探测到越权操作！你试图将文件写入沙箱外部，已被系统拒绝。"
+        target_path, err = _resolve_safe_path(file_path, SANDBOX_DIR)
+        if err:
+            return err
 
-        # 3. 确保沙箱内的合法子目录存在
+        # 确保沙箱内的合法子目录存在
         target_path.parent.mkdir(parents=True, exist_ok=True)
         
         # 4. 安全执行写入
@@ -403,11 +405,9 @@ def analyze_local_document(file_name: str, query: str) -> str:
     输入参数 file_name 只需要提供文件名（例如 'report.pdf' 或 'readme.md'），不要提供完整路径！
     """
     try:
-        target_path = (KB_DIR / file_name).resolve()
-        
-        # 安全拦截
-        if not target_path.is_relative_to(KB_DIR):
-            return "❌ 安全拦截：你试图读取知识库以外的文件！"
+        target_path, err = _resolve_safe_path(file_name, KB_DIR)
+        if err:
+            return err
 
         if not target_path.exists():
             return f"❌ 找不到文件：{file_name}。请先使用 list_kb_files 工具查看当前有哪些文件。"
@@ -843,8 +843,8 @@ def execute_workspace_cleanup(filenames: str) -> str:
 
     deleted, failed = [], []
     for name in names:
-        target = (SANDBOX_DIR / name).resolve()
-        if not target.is_relative_to(SANDBOX_DIR):
+        target, err = _resolve_safe_path(name, SANDBOX_DIR)
+        if err:
             failed.append(f"{name}（路径越权，已拦截）")
             continue
         if not target.exists():
