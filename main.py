@@ -855,7 +855,7 @@ prompt = ChatPromptTemplate.from_messages([
        - 📝 盘后研报生成：当用户明确要求"生成报告"、"盘后研报"、"推送研报"时，**绝对禁止你自行搜集数据或进行财务核算！** 你必须且只能**立刻唯一**地调用 `trigger_daily_report` 工具，将任务移交给后台引擎。
        - 📚 自定义长文保存：只有当用户要求你写一篇*非盘后研报*的特定深度分析并保存时，才调用 `write_local_file`。
     
-    3. 🖼️ 图文并茂：生成报告时，请务必先调用 draw_universal_stock_chart 生成走势图，并在传给 write_local_file 的 Markdown 内容中，使用 `![图表](./xxx.png)` 将图片嵌入。
+    3. 🖼️ 图文并茂：生成报告时，请务必先调用 draw_universal_stock_chart 生成走势图，并在传给 write_local_file 的 Markdown 内容中，使用 `![图表](./xxx.png)` 将图片嵌入。Telegram Bot 已支持将 .md 文件自动转换为 PDF 发送给用户（图片完整内嵌），因此请放心在报告中嵌入图表。
     4. 🧠 记忆系统：结合用户历史告知你的持仓情况或偏好进行解读。"""),
     ("placeholder", "{chat_history}"),
     ("human", "{input}"),

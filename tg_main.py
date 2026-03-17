@@ -455,6 +455,84 @@ async def render_markdown_table_to_image(text: str) -> tuple[str, list[str]]:
     return text, image_paths
 
 
+async def convert_md_to_pdf(md_path: Path) -> Path:
+    """
+    将 agent_workspace 中的 .md 文件渲染为 PDF，内嵌图片。
+
+    Args:
+        md_path: .md 文件的绝对路径（必须在 SANDBOX_DIR 内）
+
+    Returns:
+        Path: 生成的 .pdf 文件路径（与 .md 同目录）
+
+    Raises:
+        Exception: Playwright 渲染失败时向上抛出
+    """
+    md_text = md_path.read_text(encoding='utf-8')
+
+    # MD -> HTML（启用表格 + 代码块扩展）
+    html_body = markdown.markdown(md_text, extensions=['tables', 'fenced_code'])
+
+    # 将 <img src="./xxx.png"> 中的相对路径替换为 file:// 绝对路径，确保 Playwright 能加载图片
+    def resolve_img_src(match: re.Match) -> str:
+        src = match.group(1)
+        img_file = (SANDBOX_DIR / Path(src).name).resolve()
+        if img_file.exists():
+            return f'src="file://{img_file}"'
+        return match.group(0)
+
+    html_body = re.sub(r'src="([^"]+)"', resolve_img_src, html_body)
+
+    css = """
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+                     "Microsoft YaHei", "Segoe UI", Roboto, Arial, sans-serif;
+        font-size: 14px; line-height: 1.8; color: #222;
+        max-width: 860px; margin: 0 auto; padding: 0 8px;
+    }
+    h1 { font-size: 22px; border-bottom: 2px solid #333; padding-bottom: 6px; }
+    h2 { font-size: 18px; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin-top: 24px; }
+    h3 { font-size: 15px; margin-top: 18px; }
+    table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }
+    th, td { border: 1px solid #ccc; padding: 8px 12px; text-align: left; }
+    th { background: #f0f0f0; font-weight: 600; }
+    tr:nth-child(even) td { background: #fafafa; }
+    img { max-width: 100%; height: auto; display: block; margin: 12px auto; }
+    code { background: #f4f4f4; padding: 2px 5px; border-radius: 3px; font-size: 12px; }
+    pre { background: #f4f4f4; padding: 12px; border-radius: 4px; overflow-x: auto; }
+    pre code { background: none; padding: 0; }
+    hr { border: none; border-top: 1px solid #ddd; margin: 20px 0; }
+    blockquote { border-left: 3px solid #aaa; margin: 0; padding-left: 12px; color: #555; }
+    """
+
+    full_html = f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<style>{css}</style>
+</head><body>{html_body}</body></html>"""
+
+    pdf_path = md_path.with_suffix('.pdf')
+    tmp_html = md_path.with_suffix('.tmp.html')
+
+    try:
+        tmp_html.write_text(full_html, encoding='utf-8')
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu'])
+            page = await browser.new_page()
+            await page.goto(f'file://{tmp_html}', wait_until='networkidle')
+            await page.pdf(
+                path=str(pdf_path),
+                format='A4',
+                margin={'top': '18mm', 'bottom': '18mm', 'left': '15mm', 'right': '15mm'},
+                print_background=True
+            )
+            await browser.close()
+    finally:
+        tmp_html.unlink(missing_ok=True)
+
+    return pdf_path
+
+
 def translate_to_telegram_html(text: str) -> str:
     """将标准 Markdown 安全地转换为 Telegram HTML 方言，提升 UI 质感"""
     if not text:
@@ -1019,7 +1097,7 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             pass # 忽略 Telegram "内容未发生改变 (Message is not modified)" 的冗余报错
         return
 
-    # 🌟 3. 文件按需下载：发送 agent_workspace 中指定的 .md 文件
+    # 🌟 3. 文件按需下载：将 .md 转为 PDF 后发送
     if cmd.startswith("send_file:"):
         md_name = cmd.split(":", 1)[1]
         md_path = (SANDBOX_DIR / md_name).resolve()
@@ -1027,16 +1105,19 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.message.reply_text(f"⚠️ 文件不存在或已被清理：{md_name}")
             return
         try:
-            with open(md_path, 'rb') as doc:
+            await query.message.reply_text("⏳ 正在渲染 PDF，请稍候...")
+            pdf_path = await convert_md_to_pdf(md_path)
+            pdf_name = pdf_path.name
+            with open(pdf_path, 'rb') as doc:
                 await query.message.reply_document(
                     document=doc,
-                    filename=md_name,
-                    caption=f"📄 <b>{md_name}</b>",
+                    filename=pdf_name,
+                    caption=f"📑 <b>{pdf_name}</b>",
                     parse_mode=ParseMode.HTML
                 )
         except Exception as e:
-            logger.error(f"按需发送文件失败 [{md_name}]：{e}")
-            await query.message.reply_text(f"⚠️ 文件发送失败：{e}")
+            logger.error(f"PDF 转换或发送失败 [{md_name}]：{e}")
+            await query.message.reply_text(f"⚠️ PDF 生成失败：{e}")
         return
 
     # 🌟 4. 闭环路由：拦截返回主控台的指令

@@ -25,5 +25,6 @@ services:
       - ./jobs:/app/jobs
       - ./.env:/app/.env
       - ./tg_main.py:/app/tg_main.py
+      - ./main.py:/app/main.py
     depends_on:
       - omnistock-daily-report
