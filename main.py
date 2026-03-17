@@ -622,12 +622,16 @@ def trigger_daily_report() -> str:
         
         console.print(f"[bold yellow]⏳ 正在将研报任务投递至独立进程 (Job ID: {job_id})...[/bold yellow]")
         
+        log_dir = Path("./jobs/logs").resolve()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stderr_log = open(log_dir / f"{job_id}_stderr.log", 'w', encoding='utf-8')
         process = subprocess.Popen(
             [sys.executable, "spawn_job.py", "--job-id", job_id],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=stderr_log,
             start_new_session=True
         )
+        stderr_log.close()
         
         console.print(f"[bold green]✅ 进程已启动 | PID: {process.pid}[/bold green]")
         
@@ -716,36 +720,47 @@ def create_price_alert(ticker: str, operator: str, target_price: float) -> str:
     """
     import json
     import os
+    import logging as _logging
     from pathlib import Path
     from datetime import datetime
-    
+    from filelock import FileLock
+
+    _alert_logger = _logging.getLogger(__name__)
     alerts_file = Path("./memory/alerts.json").resolve()
     alerts_file.parent.mkdir(parents=True, exist_ok=True)
-    
-    alerts = {}
-    if alerts_file.exists():
-        try:
-            with open(alerts_file, 'r', encoding='utf-8') as f:
-                alerts = json.load(f)
-        except Exception:
-            pass
-            
-    allowed_users = os.getenv("ALLOWED_TG_USERS", "").split(",")
-    admin_id = allowed_users[0].strip() if allowed_users and allowed_users[0] else "default"
-    
-    if admin_id not in alerts:
-        alerts[admin_id] = {}
-        
-    task_key = f"{ticker}_{operator}_{target_price}"
-    alerts[admin_id][task_key] = {
-        "ticker": ticker,
-        "operator": operator,
-        "target_price": target_price,
-        "created_at": datetime.now().isoformat()
-    }
-    
-    with open(alerts_file, 'w', encoding='utf-8') as f:
-        json.dump(alerts, f, ensure_ascii=False, indent=2)
+    alerts_lock = Path("./memory/alerts.json.lock").resolve()
+
+    try:
+        with FileLock(alerts_lock, timeout=5):
+            alerts = {}
+            if alerts_file.exists():
+                try:
+                    with open(alerts_file, 'r', encoding='utf-8') as f:
+                        alerts = json.load(f)
+                except json.JSONDecodeError:
+                    _alert_logger.warning("alerts.json 文件损坏，将重建")
+
+            allowed_users = os.getenv("ALLOWED_TG_USERS", "").split(",")
+            admin_id = allowed_users[0].strip() if allowed_users and allowed_users[0] else "default"
+
+            if admin_id not in alerts:
+                alerts[admin_id] = {}
+
+            task_key = f"{ticker}_{operator}_{target_price}"
+            alerts[admin_id][task_key] = {
+                "ticker": ticker,
+                "operator": operator,
+                "target_price": target_price,
+                "created_at": datetime.now().isoformat()
+            }
+
+            with open(alerts_file, 'w', encoding='utf-8') as f:
+                json.dump(alerts, f, ensure_ascii=False, indent=2)
+    except TimeoutError:
+        return "❌ 预警写入失败：文件锁超时，请稍后重试"
+    except Exception as e:
+        _alert_logger.error(f"写入预警失败：{type(e).__name__} - {e}")
+        return f"❌ 预警写入失败：{type(e).__name__} - {e}"
         
     return f"✅ 预警任务已安全挂载至底层引擎：当 {ticker} {operator} {target_price} 时将自动拦截并通知用户。"
 

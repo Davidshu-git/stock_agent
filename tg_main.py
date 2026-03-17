@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import uuid
+from filelock import FileLock
 from datetime import datetime
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message, BotCommand, Bot
@@ -825,41 +826,45 @@ async def price_watcher_routine(context: ContextTypes.DEFAULT_TYPE):
     import logging
     
     alerts_file = Path("./memory/alerts.json").resolve()
+    alerts_lock = Path("./memory/alerts.json.lock").resolve()
+
     if not alerts_file.exists():
         return
-        
+
+    # 读取快照（加锁防止与 create_price_alert 并发冲突）
     try:
-        with open(alerts_file, 'r', encoding='utf-8') as f:
-            alerts = json.load(f)
+        with FileLock(alerts_lock, timeout=3):
+            with open(alerts_file, 'r', encoding='utf-8') as f:
+                alerts = json.load(f)
     except Exception:
         return
-        
+
     if not alerts:
         return
-        
+
     changed = False
-    
+
     for chat_id_str, user_tasks in list(alerts.items()):
         chat_id = int(chat_id_str)
         triggered_keys = []
-        
+
         for task_key, task_info in user_tasks.items():
             ticker = task_info['ticker']
             operator = task_info['operator']
             target_price = float(task_info['target_price'])
-            
+
             try:
                 price_data = fetch_stock_price_raw(ticker)
                 current_price = float(price_data.get('close', 0))
                 if current_price == 0:
                     continue
-                
+
                 is_triggered = False
                 if operator == '<' and current_price <= target_price:
                     is_triggered = True
                 elif operator == '>' and current_price >= target_price:
                     is_triggered = True
-                    
+
                 if is_triggered:
                     alert_msg = (
                         f"<blockquote><b>🚨 智能盯盘触发警告</b></blockquote>\n"
@@ -870,17 +875,21 @@ async def price_watcher_routine(context: ContextTypes.DEFAULT_TYPE):
                     )
                     await context.bot.send_message(chat_id=chat_id, text=alert_msg, parse_mode=ParseMode.HTML)
                     triggered_keys.append(task_key)
-                    
+
             except Exception as e:
-                logging.getLogger(__name__).warning(f"预警查价失败 {ticker}: {e}")
-                
+                logger.warning(f"预警查价失败 {ticker}: {e}")
+
         for key in triggered_keys:
             del alerts[chat_id_str][key]
             changed = True
-            
+
     if changed:
-        with open(alerts_file, 'w', encoding='utf-8') as f:
-            json.dump(alerts, f, ensure_ascii=False, indent=2)
+        try:
+            with FileLock(alerts_lock, timeout=3):
+                with open(alerts_file, 'w', encoding='utf-8') as f:
+                    json.dump(alerts, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"预警文件回写失败：{e}")
 
 
 def _read_job_status_sync(job_id: str) -> str:
@@ -1085,7 +1094,10 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # 🌟 2. 旁路直通网关 (Spinal Reflex)：拦截刷新指令，0.1 秒极速响应，绕过大模型！
     if cmd.startswith("check_job:"):
-        job_id = cmd.split(":")[1]
+        parts = cmd.split(":", 1)
+        if len(parts) < 2:
+            return
+        job_id = parts[1]
         
         # 如果是 latest 标记，每次点击都重新获取最新 job_id
         if job_id == "latest":

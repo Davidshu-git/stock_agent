@@ -173,7 +173,8 @@ def format_universal_ticker(ticker: str) -> str:
         return f"{str(int(digits)).zfill(4)}.HK"
 
     if len(digits) == 6:
-        if digits.startswith(('60', '68')):
+        # 沪市：主板 60xxxx，科创板 68xxxx，沪市ETF 50xxxx/51xxxx/58xxxx
+        if digits.startswith(('60', '68', '50', '51', '58')):
             return f"{digits}.SS"
         else:
             return f"{digits}.SZ"
@@ -590,7 +591,12 @@ def calculate_portfolio_valuation(positions: Dict[str, Dict[str, Any]]) -> Dict[
         }
         
         for future in as_completed(future_to_ticker):
-            result = future.result()
+            ticker_key = future_to_ticker[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                logger.error(f"持仓 {ticker_key} 估值计算失败：{type(e).__name__} - {e}")
+                result = {"ticker": ticker_key, "error": str(e)}
             holdings_result.append(result)
             
             if "error" not in result:
@@ -660,7 +666,9 @@ def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict
             shares = int(shares_match.group(1))
             cost_basis = float(cost_match.group(1))
             
-            is_etf = key.isdigit() and len(key) == 6
+            # ETF 前缀：沪市 50/51/58，深市 15/16，防止普通6位A股被误判
+            is_etf = (key.isdigit() and len(key) == 6 and
+                      key.startswith(('50', '51', '58', '15', '16')))
             
             positions[ticker] = {
                 "shares": shares,
