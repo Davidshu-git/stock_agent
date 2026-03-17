@@ -169,9 +169,9 @@ def format_universal_ticker(ticker: str) -> str:
         
     digits = ''.join(filter(str.isdigit, ticker))
     
-    if len(digits) <= 4 and digits:
-        return f"{digits.zfill(4)}.HK"
-        
+    if len(digits) <= 5 and digits:
+        return f"{str(int(digits)).zfill(4)}.HK"
+
     if len(digits) == 6:
         if digits.startswith(('60', '68')):
             return f"{digits}.SS"

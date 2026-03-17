@@ -40,7 +40,7 @@ from rich.markdown import Markdown   # 🌟 新增：Markdown 渲染引擎
 from rich.rule import Rule           # 🌟 新增：自适应分隔线组件
 from langchain.callbacks.base import BaseCallbackHandler
 #添加超时处理逻辑
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 # 🌟 LRU 缓存装饰器，用于 L1 内存池管理
 from functools import lru_cache
 
@@ -127,7 +127,7 @@ class HackerMatrixCallback(BaseCallbackHandler):
 # 插件 1：通过 yahoo 的标准接口查询美股、港股、A 股股价 (支持指定日期)
 # ==========================================
 @tool
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)))
 def get_universal_stock_price(ticker: str, date: str = None) -> str:
     """
     🌐 全球股票查价引擎（支持美股、A 股、港股）。
@@ -145,7 +145,7 @@ def get_universal_stock_price(ticker: str, date: str = None) -> str:
 # 插件 1.2：A 股 ETF 基金专用查询工具
 # ==========================================
 @tool
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)))
 def get_etf_price(etf_code: str, date: str = None) -> str:
     """
     🇨🇳 A 股 ETF 基金专用查价引擎（支持 akshare 和 yfinance 双数据源）。
@@ -174,7 +174,7 @@ def get_etf_price(etf_code: str, date: str = None) -> str:
 # 插件 1：绘图引擎
 # ==========================================
 @tool
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)))
 def draw_universal_stock_chart(ticker: str, days: int = 30) -> str:
     """
     🌐 全球股票走势绘图引擎（支持美股、A 股、港股，支持自定义时间跨度）。
@@ -197,7 +197,7 @@ def draw_universal_stock_chart(ticker: str, days: int = 30) -> str:
 # 插件 2：代码搜索工具
 # ==========================================
 @tool
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)))
 def search_company_ticker(company_name: str) -> str:
     """
     当你不知道某家公司、产品或品牌的具体美股股票代码时，必须先使用此工具。
@@ -852,8 +852,8 @@ prompt = ChatPromptTemplate.from_messages([
     1. 🔍 核心能力：遇到不知道的公司用 search_company_ticker，查本地资料用 analyze_local_document。
     2. ✍️ 智能输出调度（最高法则）：
        - ⚡ 轻量级问答：如果用户只是单纯询问价格或简单问题，请直接在终端简明扼要地回答。
-       - 📝 盘后研报生成：当用户明确要求"生成报告"、"盘后研报"、"推送研报"时，**绝对禁止你自行搜集数据或进行财务核算！** 你必须且只能**立刻唯一**地调用 `trigger_daily_report` 工具，将任务移交给后台引擎。
-       - 📚 自定义长文保存：只有当用户要求你写一篇*非盘后研报*的特定深度分析并保存时，才调用 `write_local_file`。
+       - 📝 盘后研报生成：当用户明确要求"盘后研报"、"每日研报"、"推送研报"、"今日市场报告"时，**绝对禁止你自行搜集数据或进行财务核算！** 你必须且只能**立刻唯一**地调用 `trigger_daily_report` 工具，将任务移交给后台引擎。**判断标准：用户意图是触发每日自动化报告流水线，而非针对某只股票或某个公司的专项分析。**
+       - 📚 自定义深度分析：当用户要求对某只股票、某个公司或某个主题写深度分析并保存时，调用 `write_local_file`。例如"帮我分析茅台"、"生成腾讯的研究报告"、"写一篇关于新能源的分析"。
     
     3. 🖼️ 图文并茂：生成报告时，请务必先调用 draw_universal_stock_chart 生成走势图，并在传给 write_local_file 的 Markdown 内容中，使用 `![图表](./xxx.png)` 将图片嵌入。Telegram Bot 已支持将 .md 文件自动转换为 PDF 发送给用户（图片完整内嵌），因此请放心在报告中嵌入图表。
     4. 🧠 记忆系统：结合用户历史告知你的持仓情况或偏好进行解读。"""),

@@ -71,7 +71,10 @@ async def keep_typing_action(chat_id: int, context):
     """
     try:
         while True:
-            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            try:
+                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            except Exception:
+                pass  # 网络抖动时静默跳过，不中断心跳循环
             await asyncio.sleep(4)
     except asyncio.CancelledError:
         pass
@@ -806,7 +809,7 @@ async def execute_agent_task(
         typing_task.cancel()
         try:
             await typing_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, Exception):
             pass
 
 
