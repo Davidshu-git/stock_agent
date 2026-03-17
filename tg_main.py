@@ -1100,7 +1100,7 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             pass # 忽略 Telegram "内容未发生改变 (Message is not modified)" 的冗余报错
         return
 
-    # 🌟 3. 文件按需下载：将 .md 转为 PDF 后发送
+    # 🌟 3. 文件按需下载：将 .md 转为 PDF 后发送，并询问是否归档
     if cmd.startswith("send_file:"):
         md_name = cmd.split(":", 1)[1]
         md_path = (SANDBOX_DIR / md_name).resolve()
@@ -1118,9 +1118,39 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
                     caption=f"📑 <b>{pdf_name}</b>",
                     parse_mode=ParseMode.HTML
                 )
+            # 询问是否归档到知识库
+            archive_keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📚 归档到知识库", callback_data=f"archive_file:{md_name}"),
+                InlineKeyboardButton("跳过", callback_data="archive_skip")
+            ]])
+            await query.message.reply_text(
+                "是否将此报告归档到知识库供日后检索？",
+                reply_markup=archive_keyboard
+            )
         except Exception as e:
             logger.error(f"PDF 转换或发送失败 [{md_name}]：{e}")
             await query.message.reply_text(f"⚠️ PDF 生成失败：{e}")
+        return
+
+    # 归档到知识库
+    if cmd.startswith("archive_file:"):
+        md_name = cmd.split(":", 1)[1]
+        md_path = (SANDBOX_DIR / md_name).resolve()
+        if not md_path.exists():
+            await query.message.reply_text(f"⚠️ 源文件不存在：{md_name}")
+            return
+        try:
+            dest = (KB_DIR / md_name).resolve()
+            import shutil
+            shutil.copy2(str(md_path), str(dest))
+            await query.message.reply_text(f"✅ 已归档至知识库：<code>{md_name}</code>", parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.error(f"归档失败 [{md_name}]：{e}")
+            await query.message.reply_text(f"⚠️ 归档失败：{e}")
+        return
+
+    if cmd == "archive_skip":
+        await query.message.reply_text("已跳过归档。")
         return
 
     # 🌟 4. 闭环路由：拦截返回主控台的指令

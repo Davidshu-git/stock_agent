@@ -322,6 +322,47 @@ def generate_market_report(news_text: str, user_memory: str, indices_data: str, 
     return final_state["final_report"]
 
 
+def cleanup_agent_workspace(threshold_mb: int = 500) -> None:
+    """
+    检查 agent_workspace 容量，超过阈值时按修改时间从旧到新删除文件。
+
+    Args:
+        threshold_mb: 触发清理的容量阈值（MB），默认 500MB
+    """
+    workspace = Path("./agent_workspace").resolve()
+    if not workspace.exists():
+        return
+
+    files = [f for f in workspace.iterdir() if f.is_file()]
+    total_bytes = sum(f.stat().st_size for f in files)
+    total_mb = total_bytes / (1024 * 1024)
+
+    console.print(f"[bold dim]🗂️  [工作区清理] 当前容量：{total_mb:.1f} MB / 阈值：{threshold_mb} MB[/bold dim]")
+
+    if total_mb <= threshold_mb:
+        return
+
+    # 按修改时间升序排列（最旧的在前）
+    files.sort(key=lambda f: f.stat().st_mtime)
+    deleted_count = 0
+    deleted_mb = 0.0
+
+    for f in files:
+        if total_mb <= threshold_mb * 0.8:  # 清理到阈值的 80% 留出缓冲
+            break
+        try:
+            size_mb = f.stat().st_size / (1024 * 1024)
+            f.unlink()
+            total_mb -= size_mb
+            deleted_mb += size_mb
+            deleted_count += 1
+            console.print(f"[bold dim]🗑️  已删除：{f.name} ({size_mb:.2f} MB)[/bold dim]")
+        except OSError as e:
+            console.print(f"[bold red]❌ 删除失败：{f.name} - {e}[/bold red]")
+
+    console.print(f"[bold green]✅ [工作区清理] 共删除 {deleted_count} 个文件，释放 {deleted_mb:.1f} MB[/bold green]")
+
+
 def job_routine() -> None:
     """
     盘后调度主流程：获取数据 -> 生成报告 -> 发送邮件。
@@ -400,6 +441,9 @@ def job_routine() -> None:
         console.print("[bold green]📱 [Telegram 推送] 研报已成功渲染并推送到手机！[/bold green]")
     except Exception as e:
         console.print(f"[bold red]❌ [Telegram 推送] 链路崩溃：{e}[/bold red]")
+
+    # 工作区容量巡检与清理
+    cleanup_agent_workspace(threshold_mb=500)
 
     console.print(f"[bold cyan]✅ [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 盘后调度任务执行完毕[/bold cyan]\n")
 
