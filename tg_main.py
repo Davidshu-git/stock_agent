@@ -705,7 +705,7 @@ async def execute_agent_task(
         await status_msg.delete()
         
         # 1. 🎯 触发表格视觉拦截器（表格图片已转为 Markdown 语法插入原文本）
-        final_text, _ = await render_markdown_table_to_image(reply_text)
+        final_text, table_render_paths = await render_markdown_table_to_image(reply_text)
         
         # ==========================================
         # 🚀 2. 终极渲染引擎：图片携带前置文本作为 caption
@@ -785,6 +785,13 @@ async def execute_agent_task(
                     # 微小延迟，锁死文章阅读流顺序
                     await asyncio.sleep(0.2)
         
+        # 🌟 4.5 清理本次产生的临时表格渲染图片（用完即删，不污染工作区）
+        for _tmp_path in table_render_paths:
+            try:
+                Path(_tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
         # 🌟 5. 若本次写入了 .md 文件，展示 Inline Keyboard 供用户按需下载
         if tg_callback.written_md_files:
             buttons = [
@@ -1230,7 +1237,7 @@ async def broadcast_to_telegram(text: str):
     bot = Bot(token=TG_BOT_TOKEN)
     
     # 1. 拦截并使用 Playwright 渲染表格
-    final_text, _ = await render_markdown_table_to_image(text)
+    final_text, table_render_paths = await render_markdown_table_to_image(text)
     
     # 2. 图文切片混排
     chunks = re.split(r'(!\[.*?\]\(.*?\))', final_text)
@@ -1299,6 +1306,13 @@ async def broadcast_to_telegram(text: str):
                     
         except Exception as e:
             logger.error(f"向用户 {user_id} 推送失败：{e}")
+
+    # 清理临时表格渲染图片（广播完成后统一删除）
+    for _tmp_path in table_render_paths:
+        try:
+            Path(_tmp_path).unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

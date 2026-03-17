@@ -761,10 +761,11 @@ def preview_workspace_cleanup(
     """
     扫描 agent_workspace 并列出符合条件的待删文件，不执行任何删除操作。
     用户确认列表后，再调用 execute_workspace_cleanup 执行删除。
+    注意：table_render_*.png 为系统自动清理的临时文件，不在扫描范围内。
 
     Args:
         older_than_days: 仅列出修改时间超过指定天数的文件，0 表示不限制。
-        file_extensions: 仅列出指定后缀的文件，多个后缀用逗号分隔（如 "png,pdf"），空字符串表示不限制。
+        file_extensions: 仅列出指定后缀的文件，多个后缀用逗号分隔（如 "md,pdf"），空字符串表示不限制。
 
     Returns:
         str: 待删文件列表及总大小，供用户确认。
@@ -777,6 +778,9 @@ def preview_workspace_cleanup(
     candidates = []
     for f in SANDBOX_DIR.iterdir():
         if not f.is_file():
+            continue
+        # table_render_*.png 为一次性临时文件，发送完毕后自动删除，不纳入人工清理范围
+        if f.name.startswith("table_render_") and f.suffix.lower() == ".png":
             continue
         stat = f.stat()
         age_days = (now - stat.st_mtime) / 86400
