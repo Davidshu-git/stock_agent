@@ -1,283 +1,147 @@
-# 📈 OmniStock Agent: 具备高可用中间件与双轨记忆的量化智能体架构
+# 📈 OmniStock Agent | 企业级高可用量化分析智能体架构
 
-OmniStock Agent 是一个基于 LangChain 核心框架构建的本地化全栈量化分析智能体。
+![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)
+![LangChain](https://img.shields.io/badge/LangChain-0.3.0-green.svg)
+![License](https://img.shields.io/badge/License-MIT-purple.svg)
+![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)
 
-本项目摒弃了市面上常见的“单体 Prompt 脚本”或“简单 API 套壳”模式，旨在展示**构建高可用、高容错、具备复杂业务落地能力的 AI Agent 的标准工程实践**。系统深度整合了**智能参数适配中间件**、**高可用重试机制**、**双轨记忆架构 (STM + LTM)**、**混合持久化 RAG 引擎**、**企业级沙箱安全防御**以及**可视化图表生成**等功能。
+OmniStock Agent 并非一个简单的“大模型 API 套壳”玩具，而是一个基于 LangChain 核心框架构建的**全栈、高容错、面向复杂业务落地的本地化智能体架构范式**。
 
-## 💡 核心 Agent 设计模式与工程亮点
-
-### 1. ⚙️ 智能参数中间件与适配器模式 (Smart Middleware & Adapter Pattern)
-在处理跨全球市场（美股、A股、港股）的底层接口差异时，没有粗暴地依赖大模型 Prompt 进行容易产生幻觉的字符串拼接，而是设计了**职责分离架构**：
-* **意图与执行解耦**：大模型仅负责提取用户的核心标的意图（如“腾讯”、“茅台”）。
-* **格式化装甲 (`format_universal_ticker`)**：在 Tool 层引入 Python 适配器中间件，利用正则与逻辑自动补齐 `.HK`、`.SS`、`.SZ` 等市场后缀。彻底消除了大模型格式化错误导致的 API 调用失败，显著提升系统鲁棒性。
-
-### 2. 🛡️ 高可用与容错控制 (High Availability & Fault Tolerance)
-量化与联网查询系统极易遭遇网络波动。本项目在工具调用层与模型层均实现了企业级容错机制：
-* **系统级 Socket 熔断器**：在 `valuation_engine.py` 和 `daily_job.py` 顶层注入 `socket.setdefaulttimeout(30)`，强制接管所有底层网络请求的超时上限，防止永久挂起。
-* **显式超时参数**：在所有 `yfinance` 的 `stock.history()` 调用中显式传入 `timeout=10` 参数，确保单一 API 请求不超过 10 秒。
-* **指数退避重试 (Exponential Backoff)**：引入 `tenacity` 库，为 `get_universal_stock_price` 和 `search_company_ticker` 等外部 I/O 工具挂载拦截器，遭遇 502/超时等网络抖动时自动进行最高 3 次的动态间隔重试。
-* **LLM 熔断机制**：在底层的 ChatOpenAI 客户端硬性配置了 45 秒 Request Timeout 与 Max Retries 策略，防止 Agent 在复杂推理时卡死主线程。
-
-### 3. 🧠 双轨记忆引擎 (Dual-Track Memory Architecture)
-针对长文本交互中大模型“上下文污染”和“Token 成本爆炸”的痛点，设计了长短记忆分离的架构：
-* **短期滑动窗口 (STM)**：接管底层的会话历史，通过滑动窗口自动截断冗长的历史问答，仅保留最近 5 轮对话维持短期连贯性。
-* **长期 KV 状态机 (LTM)**：赋予 Agent CRUD 级别的记忆能力。通过 Function Calling 将用户的投资偏好抽取为 Key-Value 数据存入 `user_profile.json`。
-* **并发一致性**：引入 `filelock` 文件互斥锁，保障在多线程交互下修改长期记忆时的原子操作，避免脏写。
-
-### 4. ⚡ 混合架构本地 RAG 引擎 (L1/L2 Cache)
-针对本地研报解析的性能痛点，设计了带"热更新"机制的向量数据库持久化层：
-* **L1 内存池 (Memory Hash)**：会话内极速命中。
-* **L2 硬盘持久化 (FAISS Disk)**：跨进程复用，大幅降低频繁 Embedding API 调用成本。
-* **MTime 校验刷新**：比对目标文件修改时间戳，实现研报变更后的自动穿透重建，对上层透明。
-* **RAG 数据飞轮**：每日盘后报告自动归档至 `knowledge_base/`，持续积累知识库，支持增量 RAG 检索。
-
-### 5. 🔒 Agent 越权操作防御 (Sandbox Security)
-由于赋予了 LLM 本地 I/O 权限，项目在底层构筑了严格的防逃逸逻辑：
-* 弃用脆弱的字符串 `startswith`，使用 Python 3.9+ 的 `pathlib.is_relative_to()` 进行绝对层级校验。
-* 彻底拦截大模型产生幻觉或遭遇恶意 Prompt 注入时，企图通过 `../` 进行目录穿越攻击（Path Traversal）的风险。
-
-### 6. 📊 可视化图表生成 (Chart Visualization)
-* **K线图与趋势图生成**：`draw_universal_stock_chart` 工具可生成30天的K线图和交易量可视化图表，支持多市场股票。
-* **图表嵌入机制**：生成的PNG图表可在Markdown报告中直接引用显示，提升分析报告的可读性。
-
-### 7. 🎨 Hacker-Style 交互体验 (Enhanced Terminal UI)
-* **自定义回调处理器**：`HackerMatrixCallback` 类提供了独特的赛博朋克风格输出，拦截 Agent 的思考过程和工具调用过程。
-* **富文本渲染**：使用 `rich` 库实现 Markdown 格式化输出、自适应分隔线和终端美化。
-* **高级命令行交互**：`prompt_toolkit` 提供历史记录、光标移动和输入增强功能。
-
-### 8. 📧 旁路邮件推送调度系统 (Daily Job Scheduler)
-* **定时任务调度**：基于 `schedule` 库实现常驻后台的盘后调度器，每日 15:30 自动执行。
-* **智能热点分析**：并行拉取财联社/新浪/东财 3 个数据源，多源聚合去重后采用 200 条核心资讯，结合用户持仓记忆生成个性化报告。
-* **邮件推送服务**：支持 Markdown 转 HTML 渲染，通过 SMTP 协议发送盘后报告到指定邮箱。
-* **优雅降级机制**：用户记忆文件缺失或 API 异常时自动降级，不影响调度器稳定运行。
-
-### 9. 🧮 纯 Python 多币种估值引擎 (Valuation Engine)
-* **前后端解耦架构**：通过提取 `valuation_engine.py` 独立模块，接管所有跨市场查价与汇率折算逻辑（基于 `akshare` 和 `yfinance` 实现 USD/HKD 到 CNY 的统一折算）。
-* **剥夺大模型数学计算权**：由 CPU 的 ALU（算术逻辑单元）提供 100% 精确的单票盈亏计算和按市值降序排版，彻底斩断了 LLM 在财务计算上的幻觉。
-* **DRY 原则实践**：所有估值逻辑集中管理，避免代码重复，支持多币种持仓的统一核算与可视化报表生成。
-* **N+1 串行 I/O 并发优化**：重构 `calculate_portfolio_valuation` 函数，使用 `ThreadPoolExecutor(max_workers=10)` 并发拉取所有持仓股价，将 10 个持仓的查询时间从 ~30 秒压缩至 ~3 秒，性能提升 10 倍。
-* **纯函数抽离**：新增 `_calculate_single_position` 内部纯函数，实现单一持仓的独立计算与异常隔离，支持线程池安全并发执行。
-
-### 10. 🔄 主被动融合的双重调度机制
-* **被动静默推送**：每日 15:30 的 `schedule` 常驻后台调度，自动执行盘后分析并推送研报。
-* **主动终端唤醒**：在 `main.py` 终端开放 `trigger_daily_report` 权限，允许用户随时通过对话拉起后台链路，实现毫秒级的研报主动下发。
-* **双模无缝切换**：同一套业务逻辑同时支持定时任务与即时调用，满足不同场景下的研报生成需求。
-
-### 11. 🐳 Docker 容器化部署 (Containerized Deployment)
-* **多阶段构建**: 采用 `Dockerfile.base` + `Dockerfile` 双镜像策略，基础镜像包含所有依赖，运行镜像最小化体积
-* **一键部署**: 支持 Docker Compose 快速启动，便于生产环境部署
-* **环境隔离**: 容器化运行确保依赖一致性
-
-### 12. 🧪 自动化单元测试防线 (Automated Testing)
-* **pytest 测试框架**: 基于 `pytest` 和 `pytest-mock` 构建完整的单元测试套件。
-* **核心估值引擎测试**: 覆盖 `calculate_portfolio_valuation` 函数的正常场景、边界情况和异常处理。
-* **Mock 隔离外部依赖**: 使用 `unittest.mock` 拦截网络请求，确保测试的确定性和快速执行。
+本项目致力于向开发者与架构师展示：在剥离了华丽的 Prompt 之后，如何利用**确定性的工程手段**（中间件、容灾重试、混合缓存、安全沙箱、状态机）来接管大模型的脆弱性，从而构建出真正达到企业级可用性标准的 AI Agent 系统。
 
 ---
 
-## 🛠️ 技术栈选型
+## 🏗️ 核心系统架构 (System Architecture)
 
-* **大语言模型/编排**: LangChain, OpenAI-Compatible API (DashScope Qwen3.5-Plus)
-* **核心运行逻辑**: Python 3.9+, Pydantic, FileLock (文件锁), Tenacity (容错重试)
-* **金融数据支撑**: `yfinance` (全球股票数据), `mplfinance` (K 线图渲染), `akshare` (A 股数据源)
-* **向量检索 (RAG)**: FAISS, DashScope Embeddings, PyPDFLoader, RecursiveCharacterTextSplitter
-* **交互体验**: `rich` (Markdown 与 Rule 渲染), `prompt_toolkit` (高级终端交互)
-* **网络搜索**: `ddgs` (DuckDuckGo Search)
-* **文档处理**: `pypdf`, `langchain-community` (文档加载器)
-* **系统工具**: `python-dotenv` (环境变量), `filelock` (原子锁)
-* **邮件推送**: `markdown` (Markdown 转 HTML), `schedule` (定时任务调度)
-* **容器化部署**: Docker, Docker Compose
+```mermaid
+graph TD
+    User((🧑‍💻 用户/定时调度)) --> |自然语言/触发器| Gateway[🤖 Agent 路由编排中枢]
+    
+    subgraph "🧠 双轨记忆引擎 (Memory)"
+        STM[短期记忆<br>滑动窗口截断]
+        LTM[长期记忆<br>KV状态机 + FileLock 原子锁]
+    end
+    
+    subgraph "🛡️ 确定性业务中间件 (Deterministic Tools)"
+        Adapter[参数智能适配器<br>自动补齐市场后缀]
+        Valuation[🧮 纯 Python 估值引擎<br>接管核心财务计算]
+        Chart[🎨 可视化渲染引擎<br>K线与交易量绘制]
+    end
+    
+    subgraph "📚 混合持久化检索 (Hybrid RAG)"
+        L1[L1 内存池 Cache] --> |穿透| L2[L2 FAISS 硬盘持久化]
+        L2 --> |MTime 失效校验| L3[L3 增量重建]
+    end
+    
+    Gateway <--> STM
+    Gateway <--> LTM
+    Gateway --> |Function Calling| Adapter
+    Adapter --> Valuation
+    Adapter --> Chart
+    Gateway --> |检索意图| L1
+    
+    Valuation --> |多币种汇率折算/API拉取| GlobalMarket[(全球金融数据源<br>Tenacity 指数退避保护)]
+    
+    Gateway --> |报告输出| Sandbox[🔒 本地安全沙箱<br>Pathlib 层级越权防御]
+```
 
-## 📂 核心系统架构
+---
+
+## 💡 核心护城河与工程突破 (Engineering Highlights)
+
+### 1. 🧮 业务解耦：彻底根除大模型“数值计算幻觉”
+* **行业痛点**：大模型（LLM）本质是概率模型，在处理精确财务核算、多币种汇率折算时极易产生致命的“数值幻觉”。
+* **架构解法**：剥夺大模型的数学计算权。设计独立的 `valuation_engine.py` 纯函数引擎，利用 CPU ALU 提供 100% 精确的单票盈亏计算与并发查价。大模型仅负责“意图识别”与最终的“逻辑组装”，彻底斩断财务幻觉。
+
+### 2. ⚡ 高可用与极速容错控制 (Resiliency & Retry)
+* **行业痛点**：量化联网查询极易遭遇 502 或网络抖动，导致主线程永久挂起。
+* **架构解法**：在网络 I/O 顶层注入全局 Socket 熔断器；利用 `Tenacity` 框架为所有外部调用（API 查价、SMTP 邮件推送）挂载**指数退避重试 (Exponential Backoff)** 拦截器；并在 LLM 客户端硬编码 45 秒 Request Timeout，保障系统在极端网络下的鲁棒性。
+
+### 3. 🧠 状态机治理：双轨记忆引擎与并发一致性
+* **行业痛点**：长文本交互极易导致“上下文污染”与 Token 成本爆炸。
+* **架构解法**：
+  * **STM (短期)**：利用滑动窗口自动截断，仅保留最近 5 轮核心对话。
+  * **LTM (长期)**：将用户偏好与持仓抽离为 KV 状态机 (`user_profile.json`)。通过引入 `filelock` 文件互斥锁，保障在定时调度与用户异步交互并发修改状态时的原子级写入安全。
+
+### 4. 🚀 性能革命：L1/L2 混合本地 RAG 缓存
+* **行业痛点**：每次重启或跨进程读取研报，重新请求 Embedding API 导致极高的延迟与成本。
+* **架构解法**：设计了带“热更新”机制的向量持久化层。
+  * **L1 内存池**：会话内极速命中。
+  * **L2 硬盘层**：FAISS 碎片化存储跨进程共享。
+  * **MTime 穿透校验**：比对文件修改时间戳，仅在知识库文档真实变更时才自动穿透重建，对上层业务完全透明。
+
+### 5. 🔒 企业级越权防御 (Sandbox Security)
+* **行业痛点**：赋予 Agent 本地 I/O 权限后，极易遭遇恶意 Prompt 注入引发的目录穿越攻击（Path Traversal）。
+* **架构解法**：弃用脆弱的字符串 `startswith` 拦截，在底层强制采用 Python 3.9+ 的 `pathlib.is_relative_to()` 进行绝对层级校验，将 Agent 所有的读写行为死死锁在 `agent_workspace/` 沙箱内。
+
+---
+
+## 🛠️ 技术栈选型 (Tech Stack)
+
+* **大模型与编排**: LangChain, OpenAI-Compatible API (Qwen3.5-Plus)
+* **核心基建**: Python 3.10, Pydantic, FileLock (原子锁), Tenacity (高可用重试)
+* **金融与数据**: `yfinance` (全球行情), `akshare` (A股及宏观资讯), `mplfinance` (K线渲染)
+* **向量引擎 (RAG)**: FAISS, PyPDFLoader, DashScope Embeddings
+* **调度与渲染**: `schedule` (后台守护), `markdown`, `rich` (极客终端 UI)
+* **基建部署**: Docker, Docker Compose, PM2
+
+---
+
+## 📂 核心存储层拓扑 (Directory Topology)
 
 ```text
 stock_agent/
-├── agent_workspace/    # 🔒 AI 读写沙箱：隔离报告与可视化生成文件
-├── knowledge_base/     # 📚 本地知识库：存放待解析的 PDF/Markdown 及归档报告
+├── agent_workspace/    # 🔒 AI 读写沙箱：严格隔离生成的报告与可视化图片
+├── knowledge_base/     # 📚 本地知识库：存放待解析文档及盘后归档数据
 ├── embeddings/         # 💾 L2 缓存层：FAISS 向量库持久化碎片
-├── memory/             # 🧠 状态中枢：存放 LTM 状态字典 (user_profile.json)
-├── main.py             # 系统核心编排入口
-├── daily_job.py        # 📧 盘后调度主程序（每日 15:30 执行）
-├── notifier.py         # 📧 邮件推送模块（SMTP + Markdown 渲染）
-├── valuation_engine.py # 🧮 财务核心：多币种转换、精确盈亏计算与 K 线渲染
-├── Dockerfile          # 🐳 运行镜像构建
-├── Dockerfile.base    # 🐳 基础镜像构建
-├── docker-compose.yml  # 🐳 容器编排配置
-├── .env                # 环境变量配置
-├── requirements.txt    # 项目依赖锁定
-└── README.md           # 系统架构与部署文档
+├── memory/             # 🧠 状态中枢：存放 LTM 状态字典与事件流水账
+├── main.py             # 核心 Agent 路由与交互控制台
+├── daily_job.py        # 🕒 盘后调度主引擎（含多源资讯聚合处理）
+├── valuation_engine.py # 🧮 纯 Python 财务估值与可视化独立引擎
+├── Dockerfile.base     # 🐳 Docker 基础依赖镜像（分层构建加速）
+└── docker-compose.yml  # 🐳 生产级容器编排配置
 ```
 
-## 🚀 部署与运行
+---
 
-### Docker 部署（推荐生产环境）
+## 🚀 极速部署指北 (Quick Start)
+
+### 方案 A：Docker 容器化部署（推荐生产使用）
+
+本项目已实现完善的容器化隔离，确保运行环境 100% 一致。
 
 ```bash
-# 构建并启动容器
-docker-compose up -d
+# 1. 注入你的专属密钥
+echo "DASHSCOPE_API_KEY=your_key_here" > .env
+echo "DASHSCOPE_EMBEDDING_KEY=your_embedding_key" >> .env
 
-# 查看日志
+# 2. 无感构建并挂载后台守护集群 (Up & Build)
+docker-compose up -d --build
+
+# 3. 实时追踪调度器溯源日志
 docker-compose logs -f
-
-# 停止容器
-docker-compose down
 ```
 
-### 本地开发模式
+### 方案 B：本地极客开发模式
 
-1. 克隆项目并初始化虚拟环境：
 ```bash
+# 1. 隔离虚拟环境
 python -m venv .venv
 source .venv/bin/activate
+
+# 2. 依赖灌入
 pip install -r requirements.txt
 
-```
-
-2. 在根目录配置 `.env` 注入模型密钥：
-```env
-# 主模型 API Key（用于聊天推理）
-DASHSCOPE_API_KEY=your_api_key_here
-
-# Embedding 模型 API Key（用于向量检索 RAG）
-DASHSCOPE_EMBEDDING_KEY=your_embedding_api_key_here
-
-# 邮件推送服务配置（可选，用于盘后报告推送）
-SMTP_SERVER=smtp.example.com
-SMTP_PORT=465
-SENDER_EMAIL=your_sender_email@example.com
-SENDER_PASSWORD=your_email_password
-RECEIVER_EMAIL=your_receiver_email@example.com
-
-```
-
-3. 启动终端全息交互系统：
-```bash
+# 3. 启动全息终端交互系统
 python main.py
 
-```
-
-4. （可选）启动盘后调度器：
-```bash
-# 生产模式：每日 15:30 自动执行盘后分析并发送邮件
-python daily_job.py
-
-# 测试模式：立即执行一次，验证功能是否正常
+# 4. (可选) 立即触发一次盘后深度调度流水线
 python daily_job.py --test
 ```
 
-5. 运行所有单元测试：
-```bash
-# 运行全部测试用例（详细输出）
-pytest tests/ -v
+---
 
-# 运行测试并显示覆盖率
-pytest tests/ -v --cov=valuation_engine
+## 🌟 设计哲学与愿景 (Design Philosophy)
 
-```
-
-## 🛠️ 核心功能工具集
-
-### 股票查询类工具
-* `get_universal_stock_price`: 全球股票查价引擎（支持美股、A 股、港股）
-* `draw_universal_stock_chart`: 全球股票 30 天走势绘图引擎（K 线图和交易量）
-
-### 搜索与检索类工具
-* `search_company_ticker`: 联网搜索公司股票代码
-* `list_kb_files`: 查看知识库中所有支持的文件
-* `analyze_local_document`: 分析知识库中文档并回答问题
-
-### 文件操作类工具
-* `read_local_file`: 读取沙箱内本地文件
-* `write_local_file`: 写入文件到沙箱（强制交付通道）
-
-### 记忆系统工具
-* `update_user_memory`: 更新用户长期记忆（KV 状态机）
-* `append_transaction_log`: 追加交易日志记录
-
-### 邮件推送与调度工具
-* `notifier.py`: 邮件推送模块，支持 Markdown 转 HTML 渲染
-* `daily_job.py`: 盘后调度主程序，每日 15:30 自动执行热点分析与邮件推送
-* `trigger_daily_report`: 终端主动唤醒盘后调度链路的触发器
-
-### 财务核算工具
-* `calculate_exact_portfolio_value`: 个人持仓精确总市值与盈亏核算器（支持多币种自动折算为 CNY）
-
-## 🌟 架构演进思考 (Design Philosophy)
-
-*“不要用 Prompt 解决工程问题。”* 本项目始终贯彻让 LLM 回归 **逻辑推理器 (Reasoning Engine)** 的本质。格式化补全、容错重试、缓存读取、沙箱拦截等工作，均交由底层的确定性 Python 代码（Middlewares & Decorators）处理。这不仅极大降低了 Agent 系统的幻觉率，也是 AI 应用走向企业级落地的必由之路。
-
-## 📋 环境配置与安全注意事项
-
-### 必需环境变量
-- `DASHSCOPE_API_KEY`: 用于主模型推理的 API 密钥
-- `DASHSCOPE_EMBEDDING_KEY`: 用于向量检索的 Embedding API 密钥
-
-### 可选环境变量（邮件推送服务）
-- `SMTP_SERVER`: SMTP 服务器地址（如 `smtp.qq.com`）
-- `SMTP_PORT`: SMTP 端口（SSL 推荐 465）
-- `SENDER_EMAIL`: 发件人邮箱地址
-- `SENDER_PASSWORD`: 发件人邮箱密码或授权码
-- `RECEIVER_EMAIL`: 收件人邮箱地址
-
-### 安全特性
-- **沙箱隔离**: 所有文件读写操作限制在 `agent_workspace/` 目录内
-- **文件类型白名单**: 仅允许读取 `.pdf`, `.md`, `.txt`, `.csv` 格式的文件
-- **路径穿越防护**: 使用 `pathlib.is_relative_to()` 防止目录遍历攻击
-- **并发安全**: 使用 `filelock` 确保记忆文件的原子写入操作
-
-## 🚀 生产环境部署 (基于 PM2 的高可用守护)
-
-为了确保每日盘后（15:30）研报能够极其稳定地自动生成并推送到邮箱，本项目推荐使用 [PM2](https://pm2.keymetrics.io/) 作为进程管家，实现崩溃自启与后台常驻。
-
-### 1. 环境准备
-确保你的生产环境（Linux / WSL）已安装 Node.js 与 PM2：
-```bash
-# Ubuntu / Debian / WSL
-sudo apt update
-sudo apt install nodejs npm -y
-sudo npm install pm2 -g
-
-```
-
-### 2. 一键挂载守护进程
-
-在项目根目录下执行以下命令。**注意：必须使用 `--interpreter` 强制指定虚拟环境中的 Python 解释器**，否则会导致依赖包（如 akshare）丢失。
-
-```bash
-# 启动并命名进程为 OmniStock-Agent
-pm2 start daily_job.py --name "OmniStock-Agent" --interpreter ./.venv/bin/python
-
-```
-
-### 3. 系统可观测性 (日志与监控)
-
-本项目内置了基于 `rich` 的全链路彩色溯源日志。在 PM2 挂载后，你可以随时通过以下命令切入监控台：
-
-```bash
-# 实时查看彩色抓取日志与投递状态
-pm2 logs OmniStock-Agent
-
-# 调出极客监控面板（CPU/内存占用、运行时间）
-pm2 monit
-
-```
-
-### 4. 💡 进阶：Windows / WSL 无人值守保活配置
-
-如果你使用 Windows 物理机配合 WSL 作为 24 小时服务器，**必须防范 Windows 自动休眠与重启导致 WSL 进程被物理冻结**。
-
-**步骤一：关闭休眠**
-进入 Windows 设置 -> 电源和睡眠，将“使计算机进入睡眠状态”改为 **从不**。
-
-**步骤二：配置开机静默唤醒**
-
-1. 在 Windows 桌面新建 `start_wsl_agent.vbs` 文件，写入以下代码：
-```vbscript
-Set ws = CreateObject("Wscript.Shell")
-ws.run "wsl -e pm2 resurrect", 0
-
-```
-
-
-2. 按下 `Win + R`，输入 `shell:startup` 进入启动文件夹。
-3. 将该 `.vbs` 文件拖入其中。此后，即使 Windows 半夜强制更新重启，系统也能在后台连黑框都不闪地无感拉起 WSL 和 PM2 守护进程。
+> **"Don't use Prompts to solve Engineering problems."**
+> *(永远不要试图用 Prompt 去解决工程问题。)*
